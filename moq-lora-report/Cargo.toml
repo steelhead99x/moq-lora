@@ -1,0 +1,11 @@
+[package]
+name = "moq-lora-report"
+version = "0.1.0"
+edition = "2021"
+description = "Turn moq-lora run directories into a markdown results table"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+serde_json = "1"
+flate2 = "1"
+anyhow = "1"
