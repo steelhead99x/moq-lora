@@ -1,0 +1,4 @@
+# Pi 2 (armv7 hard float), static musl, rust-lld only:
+#   cargo build --release -p moq-lora-send --target armv7-unknown-linux-musleabihf
+[target.armv7-unknown-linux-musleabihf]
+linker = "rust-lld"
