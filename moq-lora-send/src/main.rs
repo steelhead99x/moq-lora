@@ -35,7 +35,7 @@ struct Args {
     #[arg(long, default_value_t = 180_000)]
     bitrate: u32,
     /// hw = h264_v4l2m2m (Pi VideoCore), x264 = libx264 ultrafast/zerolatency
-    #[arg(long, default_value = "hw")]
+    #[arg(long, default_value = "x264")]
     encoder: String,
     /// FSK profile BITRATE:FDEV:PREAMBLE_BYTES[:x]  (x = beyond datasheet, stress)
     #[arg(long, default_value = "300000:100000:6")]
@@ -49,6 +49,10 @@ struct Args {
     /// FEC: one XOR parity frame per K data frames (0 = off, max 15)
     #[arg(long, default_value_t = 0)]
     fec_k: u8,
+    /// Zero-pad radio frames shorter than this (a tiny frame right after a 255 B one is
+    /// the one the CatWAN misses; 0 = off)
+    #[arg(long, default_value_t = 96)]
+    min_frame: usize,
     /// Drop (MoQ-style, whole rest of group) objects older than this before they start TX
     #[arg(long, default_value_t = 1000)]
     max_age_ms: u64,
@@ -315,6 +319,7 @@ fn main() -> Result<()> {
     // ---- assembler: AUs -> objects -> frames
     let mut log = a.log.as_ref().map(|p| std::fs::File::create(p)).transpose()?.map(std::io::BufWriter::new);
     let mut frag = Fragmenter::new(a.fec_k).map_err(|x| anyhow::anyhow!("{x:?}"))?;
+    frag.min_frame = a.min_frame;
     let mut sp = annexb::AuSplitter::default();
     let (mut group, mut obj, mut objects, mut au_bytes, mut keys) = (u16::MAX, 0u8, 0u64, 0u64, 0u64);
     let mut handle = |au: Vec<u8>| -> Result<()> {
@@ -387,8 +392,8 @@ fn main() -> Result<()> {
     }
     drop(log);
     println!(
-        "{{\"role\":\"send\",\"profile\":\"{}\",\"freq_hz\":{freq_hz},\"power_dbm\":{},\"size\":\"{}\",\"fps\":{},\"gop\":{},\"encoder\":\"{}\",\"bitrate_target\":{},\"fec_k\":{},\"wall_s\":{wall:.2},\"captured\":{captured},\"objects\":{objects},\"keyframes\":{keys},\"video_bps\":{:.0},\"frames_tx\":{},\"bytes_tx\":{},\"radio_busy_pct\":{:.1},\"air_bps\":{:.0},\"objects_dropped\":{},\"groups_dropped\":{},\"tx_errors\":{},\"max_queue_frames\":{}}}",
-        a.profile, a.power, a.size, a.fps, a.gop, a.encoder, a.bitrate, a.fec_k, au_bytes as f64 * 8.0 / wall, st.frames, st.bytes,
+        "{{\"role\":\"send\",\"profile\":\"{}\",\"freq_hz\":{freq_hz},\"power_dbm\":{},\"size\":\"{}\",\"fps\":{},\"gop\":{},\"encoder\":\"{}\",\"bitrate_target\":{},\"fec_k\":{},\"min_frame\":{},\"wall_s\":{wall:.2},\"captured\":{captured},\"objects\":{objects},\"keyframes\":{keys},\"video_bps\":{:.0},\"frames_tx\":{},\"bytes_tx\":{},\"radio_busy_pct\":{:.1},\"air_bps\":{:.0},\"objects_dropped\":{},\"groups_dropped\":{},\"tx_errors\":{},\"max_queue_frames\":{}}}",
+        a.profile, a.power, a.size, a.fps, a.gop, a.encoder, a.bitrate, a.fec_k, a.min_frame, au_bytes as f64 * 8.0 / wall, st.frames, st.bytes,
         100.0 * busy / wall, st.bytes as f64 * 8.0 / wall, st.objects_dropped, st.groups_dropped, st.tx_errors, st.max_queue_frames
     );
     Ok(())

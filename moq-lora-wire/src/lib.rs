@@ -3,7 +3,7 @@
 //! The model follows MoQ (Media over QUIC Transport): a **track** is a sequence of
 //! **groups**, a group starts at a keyframe (one H.264 GOP) and holds **objects**
 //! (one encoded access unit / video frame each). Objects are split into radio frames
-//! with a 10-byte header; optional XOR parity adds one repair frame per `k` data frames.
+//! with a 12-byte header; optional XOR parity adds one repair frame per `k` data frames.
 //! A receiver that loses an object it cannot repair drops the rest of that group and
 //! resumes at the next group, exactly like a MoQ subscriber joining at a group boundary.
 //!
@@ -14,9 +14,11 @@
 //!  4     obj     u8   object id within the group (0 = keyframe)
 //!  5     idx     u8   data fragment index, or parity block index if PARITY
 //!  6     nfrag   u8   number of data fragments in the object
-//!  7     flags   u8   bit0 PARITY, bits1..3 version (1), bits4..7 k (FEC block, 0 = none)
+//!  7     flags   u8   bit0 PARITY, bits1..3 version (2), bits4..7 k (FEC block, 0 = none)
 //!  8..10 objlen  u16  object length in bytes
-//! 10..   payload     <= 245 bytes
+//! 10..12 crc     u16  CRC-16/CCITT-FALSE over the whole frame with this field zeroed
+//! 12..   payload     <= 243 bytes; an object is cut into `nfrag = ceil(len/243)` equal-size
+//!                    chunks, frames may be zero-padded up to a minimum length (see below)
 //! ```
 //! Object payload: 17-byte [`ObjHdr`] followed by the H.264 Annex-B access unit.
 
@@ -24,10 +26,10 @@ pub mod annexb;
 pub mod stamp;
 
 pub const MAX_FRAME: usize = 255;
-pub const HDR_LEN: usize = 10;
+pub const HDR_LEN: usize = 12;
 pub const MAX_CHUNK: usize = MAX_FRAME - HDR_LEN;
-pub const VERSION: u8 = 1;
-pub const MAX_OBJECT: usize = 255 * MAX_CHUNK; // 62475 B (fits u16)
+pub const VERSION: u8 = 3;
+pub const MAX_OBJECT: usize = 255 * MAX_CHUNK; // 61965 B (fits u16)
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrameHdr {
@@ -41,17 +43,47 @@ pub struct FrameHdr {
     pub objlen: u16,
 }
 
+/// CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF).
+pub fn crc16(data: &[u8]) -> u16 {
+    let mut c: u16 = 0xFFFF;
+    for &b in data {
+        c ^= (b as u16) << 8;
+        for _ in 0..8 {
+            c = if c & 0x8000 != 0 { (c << 1) ^ 0x1021 } else { c << 1 };
+        }
+    }
+    c
+}
+
+/// End-to-end frame check. The radio's own CRC is not enough: when a packet fails CRC
+/// the SX1276 silently clears its FIFO, and a polled reader that already drained part of
+/// it can splice the start of the bad packet onto the next good one.
+pub fn seal(frame: &mut [u8]) {
+    frame[10] = 0;
+    frame[11] = 0;
+    let c = crc16(frame);
+    frame[10..12].copy_from_slice(&c.to_be_bytes());
+}
+
 impl FrameHdr {
+    /// Header with a zero CRC field; call [`seal`] once the payload is appended.
     pub fn encode(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.seq.to_be_bytes());
         out.extend_from_slice(&self.group.to_be_bytes());
         out.extend_from_slice(&[self.obj, self.idx, self.nfrag, (self.parity as u8) | (VERSION << 1) | (self.k << 4)]);
         out.extend_from_slice(&self.objlen.to_be_bytes());
+        out.extend_from_slice(&[0, 0]);
     }
 
     /// Parse and sanity-check a radio frame. `None` for anything that is not ours.
     pub fn decode(b: &[u8]) -> Option<(FrameHdr, &[u8])> {
         if b.len() < HDR_LEN + 1 || (b[7] >> 1) & 7 != VERSION {
+            return None;
+        }
+        let mut z = b.to_vec();
+        z[10] = 0;
+        z[11] = 0;
+        if crc16(&z) != u16::from_be_bytes([b[10], b[11]]) {
             return None;
         }
         let h = FrameHdr {
@@ -77,8 +109,15 @@ impl FrameHdr {
         Some((h, &b[HDR_LEN..]))
     }
 
+    /// Data chunks are equal-sized (`ceil(objlen / nfrag)`), so no fragment is much shorter
+    /// than the others: a very short frame right behind a long one is the frame most likely
+    /// to be missed by a receiver that is still busy with the long one.
+    pub fn chunk_size(&self) -> usize {
+        (self.objlen as usize).div_ceil(self.nfrag as usize)
+    }
     pub fn chunk_len(&self, idx: usize) -> usize {
-        (self.objlen as usize - idx * MAX_CHUNK).min(MAX_CHUNK)
+        let cs = self.chunk_size();
+        (self.objlen as usize - idx * cs).min(cs)
     }
 }
 
@@ -132,6 +171,8 @@ pub struct Fragmenter {
     pub seq: u16,
     /// FEC block size: one parity frame after every `k` data frames (0 = no FEC, max 15).
     pub k: u8,
+    /// Zero-pad shorter frames to this many bytes (receivers truncate by `objlen`).
+    pub min_frame: usize,
 }
 
 impl Fragmenter {
@@ -139,7 +180,7 @@ impl Fragmenter {
         if k > 15 {
             return Err(WireError::BadK);
         }
-        Ok(Fragmenter { seq: 0, k })
+        Ok(Fragmenter { seq: 0, k, min_frame: 0 })
     }
 
     pub fn fragment(&mut self, group: u16, obj: u8, data: &[u8]) -> Result<Vec<Vec<u8>>, WireError> {
@@ -149,7 +190,8 @@ impl Fragmenter {
         if data.len() > MAX_OBJECT {
             return Err(WireError::TooBig(data.len()));
         }
-        let chunks: Vec<&[u8]> = data.chunks(MAX_CHUNK).collect();
+        let cs = data.len().div_ceil(data.len().div_ceil(MAX_CHUNK));
+        let chunks: Vec<&[u8]> = data.chunks(cs).collect();
         let nfrag = chunks.len() as u8;
         let blk = if self.k == 0 { chunks.len() } else { self.k as usize };
         let mut out = Vec::with_capacity(chunks.len() + chunks.len().div_ceil(blk));
@@ -176,6 +218,10 @@ impl Fragmenter {
         FrameHdr { seq: self.seq, group, obj, idx, nfrag, parity, k: self.k, objlen: objlen as u16 }.encode(&mut f);
         self.seq = self.seq.wrapping_add(1);
         f.extend_from_slice(pl);
+        if f.len() < self.min_frame.min(MAX_FRAME) {
+            f.resize(self.min_frame.min(MAX_FRAME), 0);
+        }
+        seal(&mut f);
         f
     }
 }
@@ -291,13 +337,15 @@ impl Reassembler {
             return ev;
         }
         if h.parity {
-            p.parity[h.idx as usize].get_or_insert_with(|| pl.to_vec());
+            let n = pl.len().min(h.chunk_size());
+            p.parity[h.idx as usize].get_or_insert_with(|| pl[..n].to_vec());
         } else {
-            if pl.len() != h.chunk_len(h.idx as usize) {
+            let n = h.chunk_len(h.idx as usize);
+            if pl.len() < n {
                 self.frames_bad += 1;
                 return ev;
             }
-            p.chunks[h.idx as usize].get_or_insert_with(|| pl.to_vec());
+            p.chunks[h.idx as usize].get_or_insert_with(|| pl[..n].to_vec());
         }
         p.try_recover();
         if p.complete() {
@@ -370,7 +418,7 @@ mod tests {
         let mut f = Fragmenter::new(0).unwrap();
         let mut r = Reassembler::new();
         let mut got = vec![];
-        for (o, n) in [1usize, 244, 245, 246, 5000, 62475].iter().enumerate() {
+        for (o, n) in [1usize, 242, 243, 244, 5000, MAX_OBJECT].iter().enumerate() {
             let d = obj(*n, o as u8);
             for fr in f.fragment(3, o as u8, &d).unwrap() {
                 assert!(fr.len() <= MAX_FRAME);
@@ -384,7 +432,7 @@ mod tests {
     #[test]
     fn fec_repairs_one_per_block() {
         for k in [1u8, 2, 4, 8] {
-            for n in [10usize, 245, 700, 2000, 7000] {
+            for n in [10usize, 243, 700, 2000, 7000] {
                 let d = obj(n, k);
                 let mut f = Fragmenter::new(k).unwrap();
                 let frames = f.fragment(9, 4, &d).unwrap();
@@ -413,7 +461,7 @@ mod tests {
 
     #[test]
     fn fec_repairs_short_last_chunk() {
-        let d = obj(245 * 3 + 17, 1);
+        let d = obj(MAX_CHUNK * 3 + 17, 1);
         let mut f = Fragmenter::new(4).unwrap();
         let mut r = Reassembler::new();
         let mut ev = vec![];
@@ -445,6 +493,39 @@ mod tests {
         assert_eq!(ev[0], Event::Lost { group: 1, obj: 0, have: 4, need: 5 });
         assert!(matches!(ev[1], Event::Object { obj: 1, .. }));
         assert_eq!(r.frames_missing, 1);
+    }
+
+    #[test]
+    fn equal_chunks_and_padding() {
+        let mut f = Fragmenter::new(2).unwrap();
+        f.min_frame = 96;
+        let mut r = Reassembler::new();
+        for (o, n) in [1usize, 30, 246, 1000, 1100].iter().enumerate() {
+            let d = obj(*n, 7);
+            let frames = f.fragment(1, o as u8, &d).unwrap();
+            let lens: Vec<usize> = frames.iter().map(|x| x.len()).collect();
+            assert!(lens.iter().all(|&l| l >= 96 && l <= MAX_FRAME), "{lens:?}");
+            assert!(lens.iter().max().unwrap() - lens.iter().filter(|&&l| l > 96).min().unwrap_or(&96) <= 1 || *n < 96, "{lens:?}");
+            let mut ev = vec![];
+            for (i, fr) in frames.iter().enumerate() {
+                if i != 0 {
+                    ev.extend(r.push(fr));
+                }
+            }
+            ev.extend(r.flush());
+            assert_eq!(ev.last(), Some(&Event::Object { group: 1, obj: o as u8, data: d, recovered: 1 }), "n={n}");
+        }
+    }
+
+    #[test]
+    fn crc_rejects_corruption() {
+        let mut f = Fragmenter::new(0).unwrap();
+        let fr = f.fragment(0, 0, &obj(300, 3)).unwrap();
+        assert!(FrameHdr::decode(&fr[0]).is_some());
+        let mut bad = fr[0].clone();
+        bad[100] ^= 0x10;
+        assert!(FrameHdr::decode(&bad).is_none());
+        assert_eq!(crc16(b"123456789"), 0x29B1);
     }
 
     #[test]

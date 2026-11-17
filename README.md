@@ -32,7 +32,7 @@ The CatWAN firmware is the sx1276-rs `catwan-fw` (USB CDC line protocol: `F` con
 * **track** = the video stream; **group** = one GOP (starts with an IDR keyframe, SPS/PPS in band);
   **object** = one encoded frame (H.264 access unit, AUD-delimited) with a 17 B header
   (frame number, capture time in unix µs, encoder delay, key flag).
-* Radio frame: `seq u16 | group u16 | obj u8 | idx u8 | nfrag u8 | flags u8 (parity, version, k) | objlen u16 | <=245 B`.
+* Radio frame: `seq u16 | group u16 | obj u8 | idx u8 | nfrag u8 | flags u8 (parity, version, k) | objlen u16 | crc16 u16 | <=243 B` (equal-size chunks, padded to `--min-frame`).
 * FEC: with `--fec-k K` a parity frame (XOR of the K data fragments, padded) follows each block,
   repairing any single lost fragment per block.
 * Sender: objects older than `--max-age-ms` before their first fragment goes out are dropped
