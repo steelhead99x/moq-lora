@@ -1,4 +1,4 @@
-# STATUS (updated 2026-11-17 11:00 PT)
+# STATUS (updated 2026-11-17 11:40 PT)
 
 Private repo, branch `video-demo` (main = initial commit). Not public; Kyle decides.
 
@@ -14,33 +14,13 @@ Private repo, branch `video-demo` (main = initial commit). Not public; Kyle deci
   (Pi timesyncd stepped its clock ~50 ms during one run).
 - HOWTO.md (hardware, pinout, build, flash, run, rind, RF/legal) and scripts/.
 
-## Running now (Mac, unattended, started 10:43 PT, ends ~11:35 PT)
-`runs/bench.sh`: FEC k=8, 330 s each: f300_off, f300_on, r300_off, r300_on, f350_off, f350_on,
-r350_off, r350_on (f = Pi->Mac, r = Mac->Pi). Clock log every 5 s alongside.
-
-## Numbers so far (300k, Pi->Mac, FEC 8, 330 s, this pass)
-| | rind off | rind on (chacha20poly1305) |
-|---|---|---|
-| delivered video kbit/s | 171.2 | 171.8 |
-| radio goodput kbit/s | 222.7 | 225.6 |
-| radio frame loss | 0.51% | 0.57% |
-| objects lost / video frame loss | 21 / 4.5% | 27 / 4.6% |
-| obj latency p50/p95 ms (start offset) | 67 / 168 | 68 / 171 |
-| g2g p50/p95 ms (start offset) | 137 / 238 | 136 / 238 |
-| stalls > 250 ms | 20 | 20 |
-| Pi CPU % of one core (tx + ffmpeg) | 108 (63 + 46) | 109 (64 + 46) |
-| bytes per object (AEAD / total air overhead) | 0 / 361 | 20 / 382 |
-| seal on Pi / open on Mac, µs per object | - | 95 / 5.5 |
-
-An earlier pass of the same pair (10:22 PT, before the clock log) lost 0 objects in both runs;
-loss varies run to run with the RF environment, so compare off/on pairs, not passes.
+## Benchmark: done
+8 runs x 330 s (rind off/on, 300k/350k, both directions), raw logs + table in `results/video/`,
+table and findings in README.md.
 
 ## Next
-1. When bench finishes: `moq-lora-report --clock-log runs/clock_log.jsonl runs/{f,r}{300,350}_{off,on}`.
-2. Commit raw logs (gzipped jsonl + serial logs, summaries) to `results/video/<run>/`.
-3. README.md rewrite with the results table; results/video/README.md with exact commands.
-4. PNG frames + <20 MB clip to the box (/workspace/video-demo/).
-5. Clean temp files; leave no processes; radios idle.
+- PNG frames + clip to the box; temp cleanup; confirm nothing running and radios idle.
+- Kyle: review README/HOWTO, decide on making the repo public, merge `video-demo` into `main`.
 
 ## Known issues
 - `fsk_poll_long` can splice two frames after a CRC fail (caught by the end-to-end CRC-16).
