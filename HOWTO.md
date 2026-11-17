@@ -81,7 +81,7 @@ scp target/armv7-unknown-linux-musleabihf/release/moq-lora-{send,recv} pi2b:moq-
 ## 4. Flash the CatWAN firmware
 
 The stick runs `firmware/catwan-fw` (Rust, `rp2040-hal`, the same vendored `sx1276` driver).
-A prebuilt image is in `firmware/catwan-fw-v4.uf2` (`firmware/SHA256SUMS`).
+A prebuilt image is in `firmware/catwan-fw-v5.uf2` (`firmware/SHA256SUMS`).
 
 1. **Back up what is on the stick first.** Hold BOOT while plugging it in (or, if it already
    runs this firmware, send `BOOT` on its serial port), then:
@@ -91,7 +91,7 @@ A prebuilt image is in `firmware/catwan-fw-v4.uf2` (`firmware/SHA256SUMS`).
    sha256sum catwan-backup-*.bin >> SHA256SUMS
    ```
    With more than one RP2040 attached, add `--ser <serial>` to every picotool command.
-2. Flash: `picotool load -x firmware/catwan-fw-v4.uf2` (or drag the `.uf2` onto the
+2. Flash: `picotool load -x firmware/catwan-fw-v5.uf2` (or drag the `.uf2` onto the
    `RPI-RP2` drive).
 3. Or build it yourself:
    ```sh
@@ -105,9 +105,12 @@ A prebuilt image is in `firmware/catwan-fw-v4.uf2` (`firmware/SHA256SUMS`).
    has been configured; 0x00 straight after boot is normal). The line protocol is documented at the top of
    `firmware/catwan-fw/src/main.rs` (`F` configure FSK, `R` receive, `Q` transmit, `S` stats).
 
-Version 4 of the firmware (the one in this repo) formats received frames with a lookup table instead of `core::fmt`;
+Firmware v4 formats received frames with a lookup table instead of `core::fmt`;
 at 300 kbit/s the old formatter was slow enough to miss the start of the next back-to-back
-frame. See the results for the before/after.
+frame. v5 (the one in this repo) fixes a transmit timeout that was measured from the start
+of a burst instead of per packet: after 60 s of continuous `Q` traffic v4 started each packet
+on top of the previous one, which the Pi received as short, corrupt frames. Only the
+reverse direction (stick transmitting) is affected. See the results for before/after.
 
 ## 5. First light (Pi -> laptop)
 

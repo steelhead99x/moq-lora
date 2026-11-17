@@ -107,6 +107,7 @@ fn main() -> ! {
     let mut ready = false;
     let mut tx_busy = false;
     let mut tx_started = 0u64;
+    let mut tx_pkt_t = 0u64; // when the packet now on air was started (per-packet timeout)
     let mut tx_n = 0u32;
     let (mut rx_ok, mut rx_err) = (0u32, 0u32);
     let mut buf = [0u8; 255];
@@ -240,13 +241,17 @@ fn main() -> ! {
                         let _ = if modem == Modem::Lora { radio.finish_transmit() } else { radio.fsk_finish_transmit() };
                         tx_busy = false; tx_n += 1;
                         if txq.is_empty() { s.clear(); let _ = write!(s, "D {} {} {}", now(), tx_n, now() - tx_started); out.line(s.as_bytes()); }
-                    } else if now() - tx_started > 60_000_000 {
+                    } else if now() - tx_pkt_t > 2_000_000 {
+                        // v5: per-packet timeout. v4 timed out 60 s after the *burst* started, so a
+                        // TX stream longer than a minute began each packet on top of the last one.
+                        let _ = radio.standby();
                         tx_busy = false; out.line(b"ERR txtimeout");
                     }
                 }
                 if !tx_busy {
                     if let Some(p) = txq.pop_front() {
                         if tx_n == 0 { tx_started = now(); s.clear(); let _ = write!(s, "B {}", tx_started); out.line(s.as_bytes()); }
+                        tx_pkt_t = now();
                         let r = if modem == Modem::Lora { radio.start_transmit(&p) } else if p.len() > 63 { radio.fsk_transmit_long(&p, 1_000_000) } else { radio.fsk_start_transmit(&p) };
                         if r.is_ok() { tx_busy = true; } else { out.line(b"ERR tx"); }
                     }
