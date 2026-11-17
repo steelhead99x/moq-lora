@@ -172,3 +172,9 @@ at all. Details in [HOWTO.md](HOWTO.md#9-rf-and-legal-notes). You are responsibl
 ## License
 
 MIT OR Apache-2.0.
+
+## Example output
+
+![Frame received over the SX1276 link with rind encryption](media/frame-f350-rind-45s-3x.png)
+
+60 seconds of received video: [media/moq-lora-f350-rind-60s.mp4](media/moq-lora-f350-rind-60s.mp4). More in [media/](media/).
