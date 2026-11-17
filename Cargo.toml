@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
     "moq-lora-report","moq-lora-wire", "moq-lora-send", "moq-lora-recv"]
-exclude = ["vendor/sx1276"]
+exclude = ["vendor/sx1276", "firmware/catwan-fw"]
 
 [workspace.package]
 edition = "2021"

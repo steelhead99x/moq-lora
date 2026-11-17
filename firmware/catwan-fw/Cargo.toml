@@ -1,0 +1,27 @@
+[package]
+name = "catwan-fw"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "USB-serial SX1276 link-test firmware for the Electronic Cats CatWAN USB Stick RP2040"
+
+[workspace]
+
+[dependencies]
+sx1276 = { path = "../../vendor/sx1276" }
+rp2040-hal = { version = "0.12", features = ["rt", "critical-section-impl", "rom-func-cache"] }
+rp2040-boot2 = "0.3"
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+embedded-hal = "1.0"
+embedded-hal-bus = "0.3"
+usb-device = "0.3"
+usbd-serial = "0.2"
+heapless = "0.8"
+panic-halt = "1.0"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+debug = 2

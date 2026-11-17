@@ -1,0 +1,13 @@
+#!/bin/bash
+# The matched rind off/on matrix from README: both directions, 300k and 350k(x), FEC k=8, 330 s each.
+# LKEY = key file on the laptop, PKEY = the same key on the Pi (see HOWTO section 7).
+set -u; D=$(dirname "$0")
+: "${LKEY:=$HOME/moq-lora-key.hex}" "${PKEY:=moq-lora-key.hex}" "${S:=330}"
+for br in 300 350; do
+  if [ $br = 300 ]; then FP=300000:100000:6; RP=300000:100000:12; else FP=350000:100000:6:x; RP=350000:100000:14:x; fi
+  RX=""                 "$D/run2.sh" f${br}_off "$FP" "$S" --fec-k 8
+  RX="--key-file $LKEY" "$D/run2.sh" f${br}_on  "$FP" "$S" --fec-k 8 --key-file "$PKEY"
+  RX=""                 "$D/rev.sh"  r${br}_off "$RP" "$S" --fec-k 8
+  RX="--key-file $PKEY" "$D/rev.sh"  r${br}_on  "$RP" "$S" --fec-k 8 --key-file "$LKEY"
+done
+echo BENCH_DONE
