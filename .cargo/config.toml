@@ -1,0 +1,10 @@
+# Pi 2 (armv7 hard float). The binaries shipped to the Pi are static musl,
+# linked with rust-lld (no cross gcc):
+#   cargo build --release -p moq-lora-send -p moq-lora-recv --target armv7-unknown-linux-musleabihf
+[target.armv7-unknown-linux-musleabihf]
+linker = "rust-lld"
+
+# glibc armv7, if you want it. Needs the distro cross compiler
+# (`gcc-arm-linux-gnueabihf`); rust-lld cannot see that sysroot.
+[target.armv7-unknown-linux-gnueabihf]
+linker = "arm-linux-gnueabihf-gcc"
