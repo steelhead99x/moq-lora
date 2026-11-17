@@ -3,6 +3,9 @@
 # LKEY = key file on the laptop, PKEY = the same key on the Pi (see HOWTO section 7).
 set -u; D=$(dirname "$0")
 : "${LKEY:=$HOME/moq-lora-key.hex}" "${PKEY:=moq-lora-key.hex}" "${S:=330}"
+source "$D/env.sh"
+"$D/clocklog.sh" & CL=$!
+trap 'touch "$RUNS/clocklog.stop"; wait $CL' EXIT
 for br in 300 350; do
   if [ $br = 300 ]; then FP=300000:100000:6; RP=300000:100000:12; else FP=350000:100000:6:x; RP=350000:100000:14:x; fi
   RX=""                 "$D/run2.sh" f${br}_off "$FP" "$S" --fec-k 8
