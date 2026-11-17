@@ -360,7 +360,7 @@ fn main() -> Result<()> {
         let mut so = c.stdout.take().unwrap();
         let path = format!("{}/decoded.jsonl", a.out);
         let off = a.clock_offset_ms;
-        dec_th = Some(std::thread::spawn(move || -> (Vec<u64>, Vec<f64>, u64) {
+        dec_th = Some(std::thread::spawn(move || -> (Vec<u64>, Vec<(u64, f64)>, u64) {
             let mut lg = BufWriter::new(File::create(path).unwrap());
             let mut buf = vec![0u8; w * h];
             let (mut times, mut lat, mut unread) = (Vec::new(), Vec::new(), 0u64);
@@ -371,7 +371,7 @@ fn main() -> Result<()> {
                     Some(v) => {
                         let now_ms = (t / 1000) as u32;
                         let l = now_ms.wrapping_sub(v) as i32 as f64 + off;
-                        lat.push(l);
+                        lat.push((t, l));
                         let _ = writeln!(lg, "{{\"t_us\":{t},\"cap_ms_lo\":{v},\"lat_ms\":{l:.1}}}");
                     }
                     None => {
@@ -538,12 +538,19 @@ fn main() -> Result<()> {
     if let Some(s) = play.as_mut() {
         s.close(Duration::from_secs(3));
     }
-    let (dtimes, mut dlat, unread) = if let Some(mut s) = dec.take() {
+    let (mut dtimes, dlat_t, unread) = if let Some(mut s) = dec.take() {
         s.close(Duration::from_secs(5));
         dec_th.take().unwrap().join().unwrap()
     } else {
         (Vec::new(), Vec::new(), 0)
     };
+    // The CLI decoder holds one frame until more input (or EOF) arrives; the frame it
+    // flushes when we close its stdin at the end of the run is not a stall or latency
+    // sample, so ignore decoded frames that appear >1 s after the last object.
+    let cutoff = obj_times.last().copied().unwrap_or(u64::MAX).saturating_add(1_000_000);
+    let flushed = dtimes.iter().filter(|&&t| t > cutoff).count();
+    dtimes.retain(|&t| t <= cutoff);
+    let mut dlat: Vec<f64> = dlat_t.iter().filter(|(t, _)| *t <= cutoff).map(|x| x.1).collect();
     let span = first_frame.map(|f| (last_frame - f) as f64 / 1e6).unwrap_or(0.0);
     // CPU over the whole run (children = ffmpeg decoder / ffplay, after they exited)
     let wall = t0.elapsed().as_secs_f64().max(1e-9);
@@ -551,7 +558,7 @@ fn main() -> Result<()> {
     let (dst, dworst) = stalls(&dtimes, a.stall_ms);
     let frames_expected = last_frame_no.saturating_sub(first_frame_no.unwrap_or(0)) as u64 + 1;
     let s = format!(
-        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"video_frame_loss\":{:.5},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{:.1},\"p95\":{:.1},\"max\":{:.1}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{:.1},\"p95\":{:.1},\"max\":{:.1}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{:.1},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"catwan\":\"{}\",\"cpu_pct_recv\":{:.1},\"cpu_pct_children\":{:.1},\"cpu_cores\":{}}}",
+        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"video_frame_loss\":{:.5},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{:.1},\"p95\":{:.1},\"max\":{:.1}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{:.1},\"p95\":{:.1},\"max\":{:.1}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{:.1},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"catwan\":\"{}\",\"decoded_flushed_at_end\":{flushed},\"cpu_pct_recv\":{:.1},\"cpu_pct_children\":{:.1},\"cpu_cores\":{}}}",
         a.profile, re.frames_ok, re.frames_missing, re.frames_bad,
         re.frames_missing as f64 / (re.frames_ok + re.frames_missing).max(1) as f64,
         re.fec_recovered, obj_times.len(),
