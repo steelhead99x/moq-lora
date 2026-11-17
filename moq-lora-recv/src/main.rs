@@ -7,6 +7,8 @@
 mod radio;
 
 use anyhow::{bail, Context, Result};
+
+static RADIO_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 use clap::Parser;
 use moq_lora_wire::{seal, stamp, Event, GroupGate, ObjHdr, Reassembler};
 use std::fs::File;
@@ -282,7 +284,7 @@ fn main() -> Result<()> {
             std::thread::spawn(move || {
                 let t0 = Instant::now();
                 let mut st = sx1276::FskLongRx::default();
-                loop {
+                while !RADIO_STOP.load(std::sync::atomic::Ordering::Relaxed) {
                     let now = t0.elapsed().as_micros() as u32;
                     let line = match r.poll(&mut st, now, stall) {
                         Ok(Some((p, rssi))) => format!("R {now} {rssi} 0 {}", p.iter().map(|b| format!("{b:02x}")).collect::<String>()),
@@ -294,6 +296,7 @@ fn main() -> Result<()> {
                     }
                 }
                 r.idle();
+                RADIO_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
             });
         }
         #[cfg(not(target_os = "linux"))]
@@ -507,6 +510,14 @@ fn main() -> Result<()> {
         handle(e, unix_us())?;
     }
     let mut stats_line = String::new();
+    if a.radio {
+        // stop the RX thread and put the SX1276 back to sleep (it clears the flag when done)
+        RADIO_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+        let t = Instant::now();
+        while RADIO_STOP.load(std::sync::atomic::Ordering::Relaxed) && t.elapsed() < Duration::from_secs(1) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
     if let Some(mut wr) = port_w {
         wr.write_all(b"S\n")?;
         let t = Instant::now();
