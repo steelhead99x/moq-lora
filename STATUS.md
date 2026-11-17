@@ -19,7 +19,9 @@ Private repo, branch `video-demo` (main = initial commit). Not public; Kyle deci
 table and findings in README.md.
 
 ## Next
-- PNG frames + clip to the box; temp cleanup; confirm nothing running and radios idle.
+- Done 11:40 PT: frames + 60 s clip (f350_on, rind on) on the box in /workspace/video-demo/; temp files
+  cleaned on box/laptop/Mac/Pi; no moq-lora/ffmpeg/ffplay processes anywhere; CatWAN in standby (`S`),
+  Pi SX1276 put in standby by the last receiver run on exit.
 - Kyle: review README/HOWTO, decide on making the repo public, merge `video-demo` into `main`.
 
 ## Known issues
