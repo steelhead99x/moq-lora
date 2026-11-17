@@ -2,6 +2,10 @@
 //! catwan-fw) -> reassembly + XOR FEC -> MoQ group gate -> H.264 Annex-B to
 //! (a) ffplay for live display, (b) a recording, (c) an ffmpeg decoder whose output
 //! frames are scanned for the burned-in barcode = capture->decoded latency.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+mod radio;
+
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use moq_lora_wire::{seal, stamp, Event, GroupGate, ObjHdr, Reassembler};
@@ -19,6 +23,9 @@ struct Args {
     /// CatWAN serial port (macOS: /dev/cu.usbmodemXXXX)
     #[arg(long)]
     port: Option<String>,
+    /// Receive on the local SX1276 (Pi HAT) instead of a CatWAN port (reverse direction)
+    #[arg(long)]
+    radio: bool,
     /// Replay a file of `R` lines instead of a port (offline test)
     #[arg(long)]
     replay: Option<String>,
@@ -263,6 +270,34 @@ fn main() -> Result<()> {
         cmd(&mut wr, "R", "OK R")?;
         eprintln!("CatWAN listening: {r}");
         port_w = Some(wr);
+    } else if a.radio {
+        #[cfg(target_os = "linux")]
+        {
+            let cfg = sx1276::fsk::FskConfig { bitrate_bps: br, fdev_hz: fdev, preamble_bytes: pre as u16, unchecked, ..Default::default() };
+            cfg.validate().map_err(|x| anyhow::anyhow!("fsk config: {x:?}"))?;
+            let mut r = radio::Radio::open(8_000_000, (a.freq * 1e6).round() as u32, &cfg, 2)?;
+            r.start_rx()?;
+            let stall = 36 * 8_000_000 / br;
+            eprintln!("Pi SX1276 listening (FSK {br} bit/s)");
+            std::thread::spawn(move || {
+                let t0 = Instant::now();
+                let mut st = sx1276::FskLongRx::default();
+                loop {
+                    let now = t0.elapsed().as_micros() as u32;
+                    let line = match r.poll(&mut st, now, stall) {
+                        Ok(Some((p, rssi))) => format!("R {now} {rssi} 0 {}", p.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+                        Ok(None) => continue,
+                        Err(x) => format!("X {now} {x}"),
+                    };
+                    if ltx.send((unix_us(), line)).is_err() {
+                        break;
+                    }
+                }
+                r.idle();
+            });
+        }
+        #[cfg(not(target_os = "linux"))]
+        bail!("--radio needs Linux");
     } else if let Some(rp) = &a.replay {
         let f = BufReader::new(File::open(rp)?);
         let paced = a.paced;

@@ -71,6 +71,10 @@ struct Args {
     /// Per-object JSON lines log
     #[arg(long)]
     log: Option<String>,
+    /// Transmit through a CatWAN stick (sx1276-rs catwan-fw) on this serial port instead of
+    /// the local SX1276 (reverse direction: Mac -> CatWAN -> Pi)
+    #[arg(long)]
+    catwan: Option<String>,
     /// No radio: write frames as CatWAN `R` lines to FILE, paced at the FSK airtime
     #[arg(long)]
     loopback: Option<String>,
@@ -104,12 +108,81 @@ enum Link {
     #[cfg(target_os = "linux")]
     Radio(radio::Radio),
     Loop { f: std::io::BufWriter<std::fs::File>, toa: Duration, t0: Instant },
+    /// CatWAN USB CDC: `Q <hex>` per frame; the firmware stops reading USB while its
+    /// 12-frame TX queue is full, so writes block = natural backpressure.
+    Catwan { w: std::fs::File },
+}
+
+fn open_serial(path: &str) -> Result<std::fs::File> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    let f = std::fs::OpenOptions::new().read(true).write(true).custom_flags(libc::O_NOCTTY).open(path).with_context(|| format!("open {path}"))?;
+    // SAFETY: plain termios calls on a valid fd.
+    unsafe {
+        let mut t: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(f.as_raw_fd(), &mut t) != 0 {
+            bail!("tcgetattr failed");
+        }
+        libc::cfmakeraw(&mut t);
+        t.c_cflag |= libc::CLOCAL | libc::CREAD;
+        libc::tcsetattr(f.as_raw_fd(), libc::TCSANOW, &t);
+        libc::tcflush(f.as_raw_fd(), libc::TCIOFLUSH);
+    }
+    Ok(f)
+}
+
+/// Configure the CatWAN for FSK TX; returns the write half. A reader thread drains the
+/// stick's replies (B/D/ERR lines) so its output buffer never fills.
+fn open_catwan(port: &str, freq_hz: u32, p: &FskProfile, power: i8) -> Result<std::fs::File> {
+    use std::io::BufRead;
+    let f = open_serial(port)?;
+    let mut w = f.try_clone()?;
+    let (tx, rx) = mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let mut r = std::io::BufReader::new(f);
+        let mut l = String::new();
+        while r.read_line(&mut l).map(|n| n > 0).unwrap_or(false) {
+            if tx.send(l.trim().to_string()).is_err() {
+                // keep draining after setup
+            }
+            l.clear();
+        }
+    });
+    let mut cmd = |c: &str, want: &str| -> Result<String> {
+        w.write_all(format!("{c}\n").as_bytes())?;
+        let t0 = Instant::now();
+        while t0.elapsed() < Duration::from_secs(3) {
+            if let Ok(l) = rx.recv_timeout(Duration::from_millis(100)) {
+                if l.starts_with(want) {
+                    return Ok(l);
+                }
+            }
+        }
+        bail!("CatWAN: no {want:?} reply to {c:?}")
+    };
+    cmd("S", "OK S")?;
+    let r = cmd(&format!("F {freq_hz} {} {} {power} {} 1 {}", p.bitrate, p.fdev, p.pre, p.unchecked as u8), "OK F")?;
+    if !r.ends_with("None") {
+        bail!("CatWAN config error: {r}");
+    }
+    eprintln!("CatWAN TX ready: {r}");
+    Ok(w)
 }
 impl Link {
     fn send(&mut self, fr: &[u8]) -> Result<()> {
         match self {
             #[cfg(target_os = "linux")]
             Link::Radio(r) => r.send(fr),
+            Link::Catwan { w } => {
+                let mut l = Vec::with_capacity(4 + 2 * fr.len());
+                l.extend_from_slice(b"Q ");
+                for b in fr {
+                    l.extend_from_slice(format!("{b:02x}").as_bytes());
+                }
+                l.push(b'\n');
+                w.write_all(&l)?;
+                Ok(())
+            }
             Link::Loop { f, toa, t0 } => {
                 std::thread::sleep(*toa);
                 let hex: String = fr.iter().map(|b| format!("{b:02x}")).collect();
@@ -184,6 +257,12 @@ fn main() -> Result<()> {
     let frame_toa_us = (prof.pre as u64 + 2 + 1 + 255 + 2) * 8_000_000 / prof.bitrate as u64;
 
     let mut link = match &a.loopback {
+        None if a.catwan.is_some() => {
+            if !a.i_have_an_antenna {
+                bail!("refusing to transmit without --i-have-an-antenna");
+            }
+            Link::Catwan { w: open_catwan(a.catwan.as_ref().unwrap(), freq_hz, &prof, a.power)? }
+        }
         Some(p) => Link::Loop { f: std::io::BufWriter::new(std::fs::File::create(p)?), toa: Duration::from_micros(frame_toa_us), t0: Instant::now() },
         None => {
             #[cfg(target_os = "linux")]
@@ -430,6 +509,10 @@ fn main() -> Result<()> {
     }
     if let Link::Loop { f, .. } = &mut link {
         f.flush()?;
+    }
+    if let Link::Catwan { w } = &mut link {
+        std::thread::sleep(Duration::from_millis(300)); // let the stick drain its queue
+        let _ = w.write_all(b"S\n");
     }
     drop(log);
     let (cpu_self, cpu_child) = (cpu_s(libc::RUSAGE_SELF), cpu_s(libc::RUSAGE_CHILDREN));

@@ -524,8 +524,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "embedded-hal",
+ "embedded-hal-bus",
  "libc",
+ "linux-embedded-hal",
  "moq-lora-wire",
+ "sx1276",
 ]
 
 [[package]]

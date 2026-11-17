@@ -11,3 +11,9 @@ moq-lora-wire = { path = "../moq-lora-wire" }
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+sx1276 = { path = "../vendor/sx1276" }
+embedded-hal = "1.0"
+embedded-hal-bus = "0.3"
+linux-embedded-hal = { version = "0.5", default-features = false, features = ["gpio_cdev", "spi"] }
