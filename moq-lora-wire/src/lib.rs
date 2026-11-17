@@ -24,6 +24,7 @@
 
 pub mod annexb;
 pub mod stamp;
+pub mod seal;
 
 pub const MAX_FRAME: usize = 255;
 pub const HDR_LEN: usize = 12;

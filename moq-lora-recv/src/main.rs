@@ -4,7 +4,7 @@
 //! frames are scanned for the burned-in barcode = capture->decoded latency.
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use moq_lora_wire::{stamp, Event, GroupGate, ObjHdr, Reassembler};
+use moq_lora_wire::{seal, stamp, Event, GroupGate, ObjHdr, Reassembler};
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::os::fd::AsRawFd;
@@ -55,6 +55,12 @@ struct Args {
     /// Log every serial line (R lines as length only) with host timestamps to OUT/serial.log
     #[arg(long)]
     raw_log: bool,
+    /// Decrypt objects with rind AEAD using the hex key in this file (must match the sender)
+    #[arg(long)]
+    key_file: Option<String>,
+    /// chacha20poly1305 | aes128gcm | aes256gcm
+    #[arg(long, default_value = "chacha20poly1305")]
+    cipher: String,
     /// Stall threshold, ms (gap between consecutive displayed frames)
     #[arg(long, default_value_t = 250.0)]
     stall_ms: f64,
@@ -346,6 +352,15 @@ fn main() -> Result<()> {
     for s in play.iter().chain(dec.iter()) {
         s.send(&AUD);
     }
+    let sealer = match &a.key_file {
+        Some(kf) => {
+            let c = seal::Cipher::parse(&a.cipher).context("--cipher")?;
+            let k = seal::parse_key_hex(&std::fs::read_to_string(kf)?).context("key file must be hex")?;
+            Some(seal::ObjectSealer::new(c, &k).map_err(|x| anyhow::anyhow!(x))?)
+        }
+        None => None,
+    };
+    let (mut auth_fail, mut open_s) = (0u64, 0f64);
     // ---- main loop
     let mut re = Reassembler::new();
     let mut gate = GroupGate::default();
@@ -353,6 +368,7 @@ fn main() -> Result<()> {
     let (mut ok_objs, mut lost_objs, mut delivered_bytes, mut au_bytes_all) = (0u64, 0u64, 0u64, 0u64);
     let (mut rx_err, mut first_frame, mut last_frame) = (0u64, None::<u64>, 0u64);
     let mut obj_lat = Vec::new();
+    let mut rx_bytes = 0u64;
     let mut obj_times = Vec::new();
     let mut rssi = Vec::new();
     let mut last_rx = Instant::now();
@@ -361,6 +377,24 @@ fn main() -> Result<()> {
     let mut handle = |e: Event, t: u64| -> Result<()> {
         match e {
             Event::Object { group, obj, data, recovered } => {
+                let data = match &sealer {
+                    Some(sl) => {
+                        let t0 = Instant::now();
+                        let r = sl.open(group, obj, &data);
+                        open_s += t0.elapsed().as_secs_f64();
+                        match r {
+                            Some(d) => d,
+                            None => {
+                                auth_fail += 1;
+                                lost_objs += 1;
+                                gate.lost(group, obj);
+                                writeln!(objlog, "{{\"t_us\":{t},\"group\":{group},\"obj\":{obj},\"lost\":true,\"auth_fail\":true}}")?;
+                                return Ok(());
+                            }
+                        }
+                    }
+                    None => data,
+                };
                 let Some((oh, au)) = ObjHdr::decode(&data) else { return Ok(()) };
                 ok_objs += 1;
                 au_bytes_all += au.len() as u64;
@@ -409,6 +443,7 @@ fn main() -> Result<()> {
                     let fr: Option<Vec<u8>> = (0..hx.len() / 2).map(|i| u8::from_str_radix(&hx[2 * i..2 * i + 2], 16).ok()).collect();
                     if let Some(fr) = fr {
                         first_frame.get_or_insert(t);
+                        rx_bytes += fr.len() as u64;
                         last_frame = t;
                         last_rx = Instant::now();
                         for e in re.push(&fr) {
@@ -468,7 +503,7 @@ fn main() -> Result<()> {
     let (dst, dworst) = stalls(&dtimes, a.stall_ms);
     let frames_expected = last_frame_no.saturating_sub(first_frame_no.unwrap_or(0)) as u64 + 1;
     let s = format!(
-        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"video_frame_loss\":{:.5},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{:.1},\"p95\":{:.1},\"max\":{:.1}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{:.1},\"p95\":{:.1},\"max\":{:.1}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{:.1},\"clock_offset_ms\":{},\"catwan\":\"{}\"}}",
+        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"video_frame_loss\":{:.5},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{:.1},\"p95\":{:.1},\"max\":{:.1}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{:.1},\"p95\":{:.1},\"max\":{:.1}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{:.1},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"catwan\":\"{}\"}}",
         a.profile, re.frames_ok, re.frames_missing, re.frames_bad,
         re.frames_missing as f64 / (re.frames_ok + re.frames_missing).max(1) as f64,
         re.fec_recovered, obj_times.len(),
@@ -477,7 +512,11 @@ fn main() -> Result<()> {
         delivered_bytes as f64 * 8.0 / span.max(1e-9), au_bytes_all as f64 * 8.0 / span.max(1e-9),
         pct(&mut obj_lat.clone(), 0.5), pct(&mut obj_lat.clone(), 0.95), obj_lat.iter().cloned().fold(f64::NAN, f64::max),
         dtimes.len(), pct(&mut dlat.clone(), 0.5), pct(&mut dlat.clone(), 0.95), dlat.iter_mut().map(|x| *x).fold(f64::NAN, f64::max),
-        a.stall_ms, rssi.iter().sum::<f64>() / rssi.len().max(1) as f64, a.clock_offset_ms, stats_line
+        a.stall_ms, rssi.iter().sum::<f64>() / rssi.len().max(1) as f64, a.clock_offset_ms,
+        sealer.as_ref().map(|x| x.cipher.name()).unwrap_or("none"),
+        1e6 * open_s / ok_objs.max(1) as f64,
+        rx_bytes as f64 * 8.0 / span.max(1e-9),
+        stats_line
     );
     std::fs::write(format!("{}/summary.json", a.out), &s)?;
     println!("{s}");

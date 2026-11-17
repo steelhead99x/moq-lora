@@ -10,7 +10,7 @@ mod radio;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use moq_lora_wire::{annexb, stamp, Fragmenter, ObjHdr};
+use moq_lora_wire::{annexb, seal, stamp, Fragmenter, ObjHdr};
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
@@ -62,6 +62,12 @@ struct Args {
     /// Start at this unix time (sync with the receiver)
     #[arg(long, default_value_t = 0.0)]
     start_at: f64,
+    /// Encrypt every object with rind AEAD using the hex key in this file
+    #[arg(long)]
+    key_file: Option<String>,
+    /// chacha20poly1305 | aes128gcm | aes256gcm
+    #[arg(long, default_value = "chacha20poly1305")]
+    cipher: String,
     /// Per-object JSON lines log
     #[arg(long)]
     log: Option<String>,
@@ -133,6 +139,20 @@ struct TxStats {
 
 fn spawn(cmd: &[String], stdin: Stdio) -> Result<Child> {
     Command::new(&cmd[0]).args(&cmd[1..]).stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().with_context(|| format!("spawn {}", cmd[0]))
+}
+
+#[allow(deprecated)]
+fn cpu_s(who: i32) -> f64 {
+    let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+    unsafe { libc::getrusage(who, &mut ru) };
+    let tv = |t: libc::timeval| t.tv_sec as f64 + t.tv_usec as f64 / 1e6;
+    tv(ru.ru_utime) + tv(ru.ru_stime)
+}
+
+fn random_u32() -> u32 {
+    let mut b = [0u8; 4];
+    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).expect("/dev/urandom");
+    u32::from_be_bytes(b)
 }
 
 #[allow(deprecated)]
@@ -318,6 +338,17 @@ fn main() -> Result<()> {
 
     // ---- assembler: AUs -> objects -> frames
     let mut log = a.log.as_ref().map(|p| std::fs::File::create(p)).transpose()?.map(std::io::BufWriter::new);
+    let sealer = match &a.key_file {
+        Some(kf) => {
+            let c = seal::Cipher::parse(&a.cipher).context("--cipher")?;
+            let k = seal::parse_key_hex(&std::fs::read_to_string(kf)?).context("key file must be hex")?;
+            Some(seal::ObjectSealer::new(c, &k).map_err(|x| anyhow::anyhow!(x))?)
+        }
+        None => None,
+    };
+    let mut session = random_u32();
+    let mut seal_s = 0f64;
+    let mut obj_bytes = 0u64;
     let mut frag = Fragmenter::new(a.fec_k).map_err(|x| anyhow::anyhow!("{x:?}"))?;
     frag.min_frame = a.min_frame;
     let mut sp = annexb::AuSplitter::default();
@@ -328,6 +359,9 @@ fn main() -> Result<()> {
         let key = annexb::is_key(&au);
         if key || obj == u8::MAX {
             group = group.wrapping_add(1);
+            if group == 0 && objects > 0 {
+                session = random_u32(); // nonces stay unique across a group-id wrap
+            }
             obj = 0;
             keys += key as u64;
         } else {
@@ -336,6 +370,12 @@ fn main() -> Result<()> {
         let oh = ObjHdr { frame_no, cap_us, enc_us: now.saturating_sub(cap_us).min(u32::MAX as u64) as u32, key };
         let mut data = oh.encode().to_vec();
         data.extend_from_slice(&au);
+        if let Some(sl) = &sealer {
+            let t = Instant::now();
+            data = sl.seal(session, group, obj, &data);
+            seal_s += t.elapsed().as_secs_f64();
+        }
+        obj_bytes += data.len() as u64;
         let frames = match frag.fragment(group, obj, &data) {
             Ok(f) => f,
             Err(e) => {
@@ -374,6 +414,7 @@ fn main() -> Result<()> {
         }
     }
     let wall = t_run.elapsed().as_secs_f64();
+    drop(handle);
     stop.store(true, Ordering::Relaxed);
     done.store(true, Ordering::Relaxed);
     q.1.notify_all();
@@ -391,10 +432,20 @@ fn main() -> Result<()> {
         f.flush()?;
     }
     drop(log);
+    let (cpu_self, cpu_child) = (cpu_s(libc::RUSAGE_SELF), cpu_s(libc::RUSAGE_CHILDREN));
+    let objs = objects.max(1) as f64;
     println!(
-        "{{\"role\":\"send\",\"profile\":\"{}\",\"freq_hz\":{freq_hz},\"power_dbm\":{},\"size\":\"{}\",\"fps\":{},\"gop\":{},\"encoder\":\"{}\",\"bitrate_target\":{},\"fec_k\":{},\"min_frame\":{},\"wall_s\":{wall:.2},\"captured\":{captured},\"objects\":{objects},\"keyframes\":{keys},\"video_bps\":{:.0},\"frames_tx\":{},\"bytes_tx\":{},\"radio_busy_pct\":{:.1},\"air_bps\":{:.0},\"objects_dropped\":{},\"groups_dropped\":{},\"tx_errors\":{},\"max_queue_frames\":{}}}",
+        "{{\"role\":\"send\",\"profile\":\"{}\",\"freq_hz\":{freq_hz},\"power_dbm\":{},\"size\":\"{}\",\"fps\":{},\"gop\":{},\"encoder\":\"{}\",\"bitrate_target\":{},\"fec_k\":{},\"min_frame\":{},\"wall_s\":{wall:.2},\"captured\":{captured},\"objects\":{objects},\"keyframes\":{keys},\"video_bps\":{:.0},\"frames_tx\":{},\"bytes_tx\":{},\"radio_busy_pct\":{:.1},\"air_bps\":{:.0},\"objects_dropped\":{},\"groups_dropped\":{},\"tx_errors\":{},\"max_queue_frames\":{},\"cipher\":\"{}\",\"au_bytes\":{au_bytes},\"object_bytes\":{obj_bytes},\"overhead_per_object\":{{\"objhdr\":{},\"aead\":{},\"frame_headers_crc\":{:.1},\"padding_parity\":{:.1},\"total_air\":{:.1}}},\"seal_us_per_object\":{:.1},\"cpu_pct_sender\":{:.1},\"cpu_pct_ffmpeg\":{:.1},\"cpu_pct_total\":{:.1},\"cpu_cores\":4}}",
         a.profile, a.power, a.size, a.fps, a.gop, a.encoder, a.bitrate, a.fec_k, a.min_frame, au_bytes as f64 * 8.0 / wall, st.frames, st.bytes,
-        100.0 * busy / wall, st.bytes as f64 * 8.0 / wall, st.objects_dropped, st.groups_dropped, st.tx_errors, st.max_queue_frames
+        100.0 * busy / wall, st.bytes as f64 * 8.0 / wall, st.objects_dropped, st.groups_dropped, st.tx_errors, st.max_queue_frames,
+        sealer.as_ref().map(|x| x.cipher.name()).unwrap_or("none"),
+        moq_lora_wire::OBJ_HDR_LEN,
+        if sealer.is_some() { seal::OVERHEAD } else { 0 },
+        st.frames as f64 * moq_lora_wire::HDR_LEN as f64 / objs,
+        (st.bytes as f64 - st.frames as f64 * moq_lora_wire::HDR_LEN as f64 - obj_bytes as f64) / objs,
+        (st.bytes as f64 - au_bytes as f64) / objs,
+        1e6 * seal_s / objs,
+        100.0 * cpu_self / wall, 100.0 * cpu_child / wall, 100.0 * (cpu_self + cpu_child) / wall
     );
     Ok(())
 }
