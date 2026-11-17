@@ -5,6 +5,7 @@ description = "MoQ-style object/group framing, XOR-parity FEC and H.264 access-u
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+repository.workspace = true
 
 [dependencies]
 # kixel-ai/rind main, pinned (pure-Rust AEAD; armv7 uses its portable/arm backend)

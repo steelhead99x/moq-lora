@@ -3,14 +3,16 @@
 //! (a) ffplay for live display, (b) a recording, (c) an ffmpeg decoder whose output
 //! frames are scanned for the burned-in barcode = capture->decoded latency.
 #[cfg(target_os = "linux")]
-#[allow(dead_code)]
 mod radio;
 
 use anyhow::{bail, Context, Result};
 
 static RADIO_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 use clap::Parser;
-use moq_lora_wire::{seal, stamp, Event, GroupGate, ObjHdr, Reassembler};
+use moq_lora_wire::{
+    parse_fsk_profile, read_line_limited, seal, stamp, Event, GroupGate, Line, ObjHdr, Reassembler,
+    MAX_SERIAL_LINE,
+};
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::os::fd::AsRawFd;
@@ -76,11 +78,19 @@ struct Args {
 }
 
 fn unix_us() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros() as u64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_micros() as u64
 }
 
 fn open_serial(path: &str) -> Result<File> {
-    let f = std::fs::OpenOptions::new().read(true).write(true).custom_flags(libc::O_NOCTTY).open(path).with_context(|| format!("open {path}"))?;
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOCTTY)
+        .open(path)
+        .with_context(|| format!("open {path}"))?;
     // SAFETY: plain termios calls on a valid fd.
     unsafe {
         let mut t: libc::termios = std::mem::zeroed();
@@ -114,7 +124,11 @@ impl Sink {
             }
             dropped
         });
-        Sink { tx: Some(tx), th: Some(th), child }
+        Sink {
+            tx: Some(tx),
+            th: Some(th),
+            child,
+        }
     }
     fn send(&self, b: &[u8]) {
         if let Some(t) = &self.tx {
@@ -156,11 +170,29 @@ fn live_bytes(au: &[u8]) -> Vec<u8> {
     [body, &AUD[..]].concat()
 }
 
+/// Escape a string for a JSON string literal. Measured stats lines have no
+/// quotes, so this leaves them unchanged and only stops a hostile serial
+/// peer from breaking `summary.json`.
+fn json_escape(s: &str) -> String {
+    let mut o = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"),
+            '\r' => o.push_str("\\r"),
+            c if c.is_control() => o.push_str(&format!("\\u{:04x}", u32::from(c))),
+            c => o.push(c),
+        }
+    }
+    o
+}
+
 fn pct(v: &mut [f64], p: f64) -> f64 {
     if v.is_empty() {
         return f64::NAN;
     }
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     v[((v.len() - 1) as f64 * p).round() as usize]
 }
 
@@ -181,7 +213,12 @@ fn stalls(times_us: &[u64], thr_ms: f64) -> (u32, f64) {
 /// lowest-RTT exchange (NTP-style).
 fn clock_check(host: &str) -> Result<()> {
     let mut c = Command::new("ssh")
-        .args(["-o", "BatchMode=yes", host, "while read l; do date +%s%N; done"])
+        .args([
+            "-o",
+            "BatchMode=yes",
+            host,
+            "while read l; do date +%s%N; done",
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()?;
@@ -205,7 +242,12 @@ fn clock_check(host: &str) -> Result<()> {
     drop(si);
     let _ = c.kill();
     let _ = c.wait();
-    println!("{{\"host\":\"{host}\",\"best_rtt_ms\":{:.2},\"remote_minus_local_ms\":{:.2}}}", best.0, best.1);
+    println!(
+        "{{\"host\":\"{}\",\"best_rtt_ms\":{:.2},\"remote_minus_local_ms\":{:.2}}}",
+        json_escape(host),
+        best.0,
+        best.1
+    );
     Ok(())
 }
 
@@ -222,12 +264,8 @@ fn main() -> Result<()> {
         (x.parse()?, y.parse()?)
     };
     std::fs::create_dir_all(&a.out)?;
-    let p: Vec<&str> = a.profile.split(':').collect();
-    if p.len() < 3 {
-        bail!("profile BITRATE:FDEV:PREAMBLE[:x]");
-    }
-    let (br, fdev, pre): (u32, u32, u32) = (p[0].parse()?, p[1].parse()?, p[2].parse()?);
-    let unchecked = p.get(3) == Some(&"x");
+    let prof = parse_fsk_profile(&a.profile).map_err(|e| anyhow::anyhow!(e))?;
+    let (br, fdev, pre, unchecked) = (prof.bitrate, prof.fdev, prof.preamble, prof.unchecked);
 
     // ---- line source
     let (ltx, lrx) = mpsc::channel::<(u64, String)>();
@@ -238,16 +276,21 @@ fn main() -> Result<()> {
         let rd = f;
         std::thread::spawn(move || {
             let mut r = BufReader::with_capacity(1 << 16, rd);
-            let mut l = Vec::new();
             loop {
-                l.clear();
-                match r.read_until(b'\n', &mut l) {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => {
-                        if ltx.send((unix_us(), String::from_utf8_lossy(&l).trim().to_string())).is_err() {
+                match read_line_limited(&mut r, MAX_SERIAL_LINE) {
+                    Ok(Some(Line::Data(l))) => {
+                        let s = String::from_utf8_lossy(&l).trim().to_string();
+                        if s.is_empty() {
+                            continue;
+                        }
+                        if ltx.send((unix_us(), s)).is_err() {
                             break;
                         }
                     }
+                    Ok(Some(Line::TooLong)) => {
+                        let _ = ltx.send((unix_us(), "X line-too-long".into()));
+                    }
+                    Ok(None) | Err(_) => break,
                 }
             }
         });
@@ -265,7 +308,11 @@ fn main() -> Result<()> {
         };
         cmd(&mut wr, "S", "OK S")?;
         let freq_hz = (a.freq * 1e6).round() as u32;
-        let r = cmd(&mut wr, &format!("F {freq_hz} {br} {fdev} 5 {pre} 1 {}", unchecked as u8), "OK F")?;
+        let r = cmd(
+            &mut wr,
+            &format!("F {freq_hz} {br} {fdev} 5 {pre} 1 {}", unchecked as u8),
+            "OK F",
+        )?;
         if !r.ends_with("None") {
             bail!("CatWAN config error: {r}");
         }
@@ -275,8 +322,15 @@ fn main() -> Result<()> {
     } else if a.radio {
         #[cfg(target_os = "linux")]
         {
-            let cfg = sx1276::fsk::FskConfig { bitrate_bps: br, fdev_hz: fdev, preamble_bytes: pre as u16, unchecked, ..Default::default() };
-            cfg.validate().map_err(|x| anyhow::anyhow!("fsk config: {x:?}"))?;
+            let cfg = sx1276::fsk::FskConfig {
+                bitrate_bps: br,
+                fdev_hz: fdev,
+                preamble_bytes: pre,
+                unchecked,
+                ..Default::default()
+            };
+            cfg.validate()
+                .map_err(|x| anyhow::anyhow!("fsk config: {x:?}"))?;
             let mut r = radio::Radio::open(8_000_000, (a.freq * 1e6).round() as u32, &cfg, 2)?;
             r.start_rx()?;
             let stall = 36 * 8_000_000 / br;
@@ -287,7 +341,10 @@ fn main() -> Result<()> {
                 while !RADIO_STOP.load(std::sync::atomic::Ordering::Relaxed) {
                     let now = t0.elapsed().as_micros() as u32;
                     let line = match r.poll(&mut st, now, stall) {
-                        Ok(Some((p, rssi))) => format!("R {now} {rssi} 0 {}", p.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+                        Ok(Some((p, rssi))) => format!(
+                            "R {now} {rssi} 0 {}",
+                            p.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                        ),
                         Ok(None) => continue,
                         Err(x) => format!("X {now} {x}"),
                     };
@@ -302,11 +359,19 @@ fn main() -> Result<()> {
         #[cfg(not(target_os = "linux"))]
         bail!("--radio needs Linux");
     } else if let Some(rp) = &a.replay {
-        let f = BufReader::new(File::open(rp)?);
+        let mut f = BufReader::new(File::open(rp)?);
         let paced = a.paced;
         std::thread::spawn(move || {
             let t0 = Instant::now();
-            for l in f.lines().map_while(Result::ok) {
+            loop {
+                let l = match read_line_limited(&mut f, MAX_SERIAL_LINE) {
+                    Ok(Some(Line::Data(buf))) => String::from_utf8_lossy(&buf).trim().to_string(),
+                    Ok(Some(Line::TooLong)) => "X line-too-long".to_string(),
+                    Ok(None) | Err(_) => break,
+                };
+                if l.is_empty() {
+                    continue;
+                }
                 if paced {
                     if let Some(us) = l.split(' ').nth(1).and_then(|x| x.parse::<u64>().ok()) {
                         let due = Duration::from_micros(us);
@@ -325,16 +390,48 @@ fn main() -> Result<()> {
     }
 
     // ---- sinks
-    let mut raw = if a.raw_log { Some(BufWriter::new(File::create(format!("{}/serial.log", a.out))?)) } else { None };
+    let mut raw = if a.raw_log {
+        Some(BufWriter::new(File::create(format!(
+            "{}/serial.log",
+            a.out
+        ))?))
+    } else {
+        None
+    };
     let mut rec = BufWriter::new(File::create(format!("{}/rec.h264", a.out))?);
     let mut objlog = BufWriter::new(File::create(format!("{}/objects.jsonl", a.out))?);
     // single-threaded decode: frame threading would hold back (threads-1) frames
-    let low = ["-fflags", "nobuffer", "-flags", "low_delay", "-probesize", "32", "-analyzeduration", "0", "-threads", "1"];
+    let low = [
+        "-fflags",
+        "nobuffer",
+        "-flags",
+        "low_delay",
+        "-probesize",
+        "32",
+        "-analyzeduration",
+        "0",
+        "-threads",
+        "1",
+    ];
     let mut play = if a.play {
         let mut c = Command::new("ffplay")
             .args(["-hide_banner", "-loglevel", "error"])
             .args(low)
-            .args(["-framedrop", "-sync", "ext", "-window_title", "LoRa SX1276 live video (moq-lora)", "-x", "640", "-y", "480", "-f", "h264", "-i", "pipe:0"])
+            .args([
+                "-framedrop",
+                "-sync",
+                "ext",
+                "-window_title",
+                "SX1276 FSK live video (moq-lora)",
+                "-x",
+                "640",
+                "-y",
+                "480",
+                "-f",
+                "h264",
+                "-i",
+                "pipe:0",
+            ])
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -350,7 +447,23 @@ fn main() -> Result<()> {
         let mut c = Command::new("ffmpeg")
             .args(["-hide_banner", "-loglevel", "error"])
             .args(low)
-            .args(["-f", "h264", "-i", "pipe:0", "-f", "rawvideo", "-pix_fmt", "gray", "-s", &a.size, "-fps_mode", "passthrough", "-flush_packets", "1", "pipe:1"])
+            .args([
+                "-f",
+                "h264",
+                "-i",
+                "pipe:0",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "gray",
+                "-s",
+                &a.size,
+                "-fps_mode",
+                "passthrough",
+                "-flush_packets",
+                "1",
+                "pipe:1",
+            ])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -360,28 +473,33 @@ fn main() -> Result<()> {
         let mut so = c.stdout.take().unwrap();
         let path = format!("{}/decoded.jsonl", a.out);
         let off = a.clock_offset_ms;
-        dec_th = Some(std::thread::spawn(move || -> (Vec<u64>, Vec<(u64, f64)>, u64) {
-            let mut lg = BufWriter::new(File::create(path).unwrap());
-            let mut buf = vec![0u8; w * h];
-            let (mut times, mut lat, mut unread) = (Vec::new(), Vec::new(), 0u64);
-            while so.read_exact(&mut buf).is_ok() {
-                let t = unix_us();
-                times.push(t);
-                match stamp::read_barcode(&buf, w, h) {
-                    Some(v) => {
-                        let now_ms = (t / 1000) as u32;
-                        let l = now_ms.wrapping_sub(v) as i32 as f64 + off;
-                        lat.push((t, l));
-                        let _ = writeln!(lg, "{{\"t_us\":{t},\"cap_ms_lo\":{v},\"lat_ms\":{l:.1}}}");
-                    }
-                    None => {
-                        unread += 1;
-                        let _ = writeln!(lg, "{{\"t_us\":{t},\"cap_ms_lo\":null}}");
+        dec_th = Some(std::thread::spawn(
+            move || -> (Vec<u64>, Vec<(u64, f64)>, u64) {
+                let mut lg = BufWriter::new(File::create(path).unwrap());
+                let mut buf = vec![0u8; w * h];
+                let (mut times, mut lat, mut unread) = (Vec::new(), Vec::new(), 0u64);
+                while so.read_exact(&mut buf).is_ok() {
+                    let t = unix_us();
+                    times.push(t);
+                    match stamp::read_barcode(&buf, w, h) {
+                        Some(v) => {
+                            let now_ms = (t / 1000) as u32;
+                            let l = now_ms.wrapping_sub(v) as i32 as f64 + off;
+                            lat.push((t, l));
+                            let _ = writeln!(
+                                lg,
+                                "{{\"t_us\":{t},\"cap_ms_lo\":{v},\"lat_ms\":{l:.1}}}"
+                            );
+                        }
+                        None => {
+                            unread += 1;
+                            let _ = writeln!(lg, "{{\"t_us\":{t},\"cap_ms_lo\":null}}");
+                        }
                     }
                 }
-            }
-            (times, lat, unread)
-        }));
+                (times, lat, unread)
+            },
+        ));
         Some(Sink::new(si, Some(c)))
     } else {
         None
@@ -393,8 +511,7 @@ fn main() -> Result<()> {
     let sealer = match &a.key_file {
         Some(kf) => {
             let c = seal::Cipher::parse(&a.cipher).context("--cipher")?;
-            let k = seal::parse_key_hex(&std::fs::read_to_string(kf)?).context("key file must be hex")?;
-            Some(seal::ObjectSealer::new(c, &k).map_err(|x| anyhow::anyhow!(x))?)
+            Some(seal::open_sealer(std::path::Path::new(kf), c).map_err(|e| anyhow::anyhow!(e))?)
         }
         None => None,
     };
@@ -403,7 +520,8 @@ fn main() -> Result<()> {
     let mut re = Reassembler::new();
     let mut gate = GroupGate::default();
     let t0 = Instant::now();
-    let (mut ok_objs, mut lost_objs, mut delivered_bytes, mut au_bytes_all) = (0u64, 0u64, 0u64, 0u64);
+    let (mut ok_objs, mut lost_objs, mut delivered_bytes, mut au_bytes_all) =
+        (0u64, 0u64, 0u64, 0u64);
     let (mut rx_err, mut first_frame, mut last_frame) = (0u64, None::<u64>, 0u64);
     let mut obj_lat = Vec::new();
     let mut rx_bytes = 0u64;
@@ -414,7 +532,12 @@ fn main() -> Result<()> {
     let mut last_frame_no = 0u32;
     let mut handle = |e: Event, t: u64| -> Result<()> {
         match e {
-            Event::Object { group, obj, data, recovered } => {
+            Event::Object {
+                group,
+                obj,
+                data,
+                recovered,
+            } => {
                 let data = match &sealer {
                     Some(sl) => {
                         let t0 = Instant::now();
@@ -433,7 +556,9 @@ fn main() -> Result<()> {
                     }
                     None => data,
                 };
-                let Some((oh, au)) = ObjHdr::decode(&data) else { return Ok(()) };
+                let Some((oh, au)) = ObjHdr::decode(&data) else {
+                    return Ok(());
+                };
                 ok_objs += 1;
                 au_bytes_all += au.len() as u64;
                 first_frame_no.get_or_insert(oh.frame_no);
@@ -455,7 +580,12 @@ fn main() -> Result<()> {
                     }
                 }
             }
-            Event::Lost { group, obj, have, need } => {
+            Event::Lost {
+                group,
+                obj,
+                have,
+                need,
+            } => {
                 lost_objs += 1;
                 gate.lost(group, obj);
                 writeln!(objlog, "{{\"t_us\":{t},\"group\":{group},\"obj\":{obj},\"lost\":true,\"have\":{have},\"need\":{need}}}")?;
@@ -468,17 +598,25 @@ fn main() -> Result<()> {
             Ok((t, l)) => {
                 if let Some(r) = raw.as_mut() {
                     match l.rsplit_once(' ') {
-                        Some((head, hx)) if l.starts_with("R ") => writeln!(r, "{t} {head} len={} seq={}", hx.len() / 2, hx.get(0..4).unwrap_or(""))?,
+                        Some((head, hx)) if l.starts_with("R ") => writeln!(
+                            r,
+                            "{t} {head} len={} seq={}",
+                            hx.len() / 2,
+                            hx.get(0..4).unwrap_or("")
+                        )?,
                         _ => writeln!(r, "{t} {l}")?,
                     }
                 }
                 if let Some(rest) = l.strip_prefix("R ") {
                     let mut it = rest.split(' ');
-                    let (_tdev, rs, _snr, hx) = (it.next(), it.next(), it.next(), it.next().unwrap_or(""));
+                    let (_tdev, rs, _snr, hx) =
+                        (it.next(), it.next(), it.next(), it.next().unwrap_or(""));
                     if let Some(r) = rs.and_then(|s| s.parse::<i32>().ok()) {
                         rssi.push(r as f64);
                     }
-                    let fr: Option<Vec<u8>> = (0..hx.len() / 2).map(|i| u8::from_str_radix(&hx[2 * i..2 * i + 2], 16).ok()).collect();
+                    let fr: Option<Vec<u8>> = (0..hx.len() / 2)
+                        .map(|i| u8::from_str_radix(&hx[2 * i..2 * i + 2], 16).ok())
+                        .collect();
                     if let Some(fr) = fr {
                         first_frame.get_or_insert(t);
                         rx_bytes += fr.len() as u64;
@@ -514,7 +652,9 @@ fn main() -> Result<()> {
         // stop the RX thread and put the SX1276 back to sleep (it clears the flag when done)
         RADIO_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
         let t = Instant::now();
-        while RADIO_STOP.load(std::sync::atomic::Ordering::Relaxed) && t.elapsed() < Duration::from_secs(1) {
+        while RADIO_STOP.load(std::sync::atomic::Ordering::Relaxed)
+            && t.elapsed() < Duration::from_secs(1)
+        {
             std::thread::sleep(Duration::from_millis(5));
         }
     }
@@ -547,11 +687,21 @@ fn main() -> Result<()> {
     // The CLI decoder holds one frame until more input (or EOF) arrives; the frame it
     // flushes when we close its stdin at the end of the run is not a stall or latency
     // sample, so ignore decoded frames that appear >1 s after the last object.
-    let cutoff = obj_times.last().copied().unwrap_or(u64::MAX).saturating_add(1_000_000);
+    let cutoff = obj_times
+        .last()
+        .copied()
+        .unwrap_or(u64::MAX)
+        .saturating_add(1_000_000);
     let flushed = dtimes.iter().filter(|&&t| t > cutoff).count();
     dtimes.retain(|&t| t <= cutoff);
-    let mut dlat: Vec<f64> = dlat_t.iter().filter(|(t, _)| *t <= cutoff).map(|x| x.1).collect();
-    let span = first_frame.map(|f| (last_frame - f) as f64 / 1e6).unwrap_or(0.0);
+    let mut dlat: Vec<f64> = dlat_t
+        .iter()
+        .filter(|(t, _)| *t <= cutoff)
+        .map(|x| x.1)
+        .collect();
+    let span = first_frame
+        .map(|f| (last_frame - f) as f64 / 1e6)
+        .unwrap_or(0.0);
     // CPU over the whole run (children = ffmpeg decoder / ffplay, after they exited)
     let wall = t0.elapsed().as_secs_f64().max(1e-9);
     let (ost, oworst) = stalls(&obj_times, a.stall_ms);
@@ -571,7 +721,7 @@ fn main() -> Result<()> {
         sealer.as_ref().map(|x| x.cipher.name()).unwrap_or("none"),
         1e6 * open_s / ok_objs.max(1) as f64,
         rx_bytes as f64 * 8.0 / span.max(1e-9),
-        stats_line,
+        json_escape(&stats_line),
         100.0 * cpu_s(libc::RUSAGE_SELF) / wall, 100.0 * cpu_s(libc::RUSAGE_CHILDREN) / wall,
         std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
     );
@@ -587,4 +737,16 @@ fn cpu_s(who: i32) -> f64 {
     unsafe { libc::getrusage(who, &mut ru) };
     let tv = |t: libc::timeval| t.tv_sec as f64 + t.tv_usec as f64 / 1e6;
     tv(ru.ru_utime) + tv(ru.ru_stime)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::json_escape;
+
+    #[test]
+    fn json_escape_leaves_stats_and_quotes() {
+        let stats = "OK S rx_ok=1 rx_err=0 tx=0 out_drop=0";
+        assert_eq!(json_escape(stats), stats);
+        assert_eq!(json_escape("a\"b\\c"), "a\\\"b\\\\c");
+    }
 }

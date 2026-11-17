@@ -152,10 +152,14 @@ armv7 binaries, flashing the CatWAN firmware (back up first), running, measuring
 ## Radio rules
 
 915.0 MHz only (US 902-928 MHz ISM band), +5 dBm maximum, never 925.0 MHz: the sender refuses
-anything else, and nothing transmits without `--i-have-an-antenna`. This is a single-channel,
-non-hopping FSK link keyed up to ~80% of the time; whether that meets FCC Part 15.247 depends on
-its 6 dB bandwidth, which we have not measured. Outside the Americas, 915 MHz may not be an ISM band
-at all. Details in [HOWTO.md](HOWTO.md#9-rf-and-legal-notes). You are responsible for your emissions.
+anything else, and nothing transmits without `--i-have-an-antenna`. The CatWAN firmware's own
+`F` and `L` serial commands do not apply that cap: they accept 2 to 17 dBm and the frequency
+they are given. Use the host tools, not a raw terminal session, if you are relying on the
+checks. 350 kbit/s FSK (`:x` in the profile) is outside the SX1276 datasheet's characterized
+settings. This is a single-channel, non-hopping FSK link keyed up to ~80% of the time; whether
+that meets FCC Part 15.247 depends on its 6 dB bandwidth, which we have not measured. Outside
+the Americas, 915 MHz may not be an ISM band at all. Details in
+[HOWTO.md](HOWTO.md#9-rf-and-legal-notes). You are responsible for your emissions.
 
 ## Known limitations
 
@@ -165,13 +169,20 @@ at all. Details in [HOWTO.md](HOWTO.md#9-rf-and-legal-notes). You are responsibl
 * The ffmpeg CLI decoder holds one frame (~67 ms at 15 fps) that a library decoder would not.
 * Clock offset between the machines comes from an ssh round trip (~11 ms); latency figures carry
   a few ms of uncertainty.
-* No key exchange: encryption uses a pre-shared key file.
+* No key exchange: encryption uses a pre-shared key file. The tools refuse a key file that
+  is readable by group or others (mode must be `0600` or stricter). The file is passed by
+  path and is not in git.
+* No replay window. A recorded object can be opened again under the same key if its session
+  id and group/object ids are replayed. Fragment headers are not inside the AEAD.
 * Single fixed channel, no hopping, no rate adaptation; the encoder bitrate is set by hand.
 * Tested with ffmpeg's test pattern only, not a camera.
+* Longer list of open issues: [ROADMAP.md](ROADMAP.md). The code review is [REVIEW.md](REVIEW.md).
 
 ## License
 
-MIT OR Apache-2.0.
+Not settled. `Cargo.toml` says `MIT OR Apache-2.0`, but the license texts are not in this
+tree, so that line is not a grant. See [LICENSE](LICENSE). The owner has to confirm or replace
+it before a public release.
 
 ## Example output
 

@@ -1,0 +1,12 @@
+License not yet chosen
+======================
+
+This repository does not yet include a license chosen by the copyright holder.
+
+Cargo.toml (and the vendored crate manifests) currently contain
+`license = "MIT OR Apache-2.0"`. That string is not a license grant: the MIT
+and Apache-2.0 license texts are not in this tree, and the owner has not
+confirmed the choice for a public release.
+
+TODO(owner): pick a license, add its text in place of this file, and make
+every Cargo.toml `license` field match. Until then, all rights reserved.

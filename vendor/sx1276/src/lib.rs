@@ -98,7 +98,11 @@ pub struct PolledIrq<P, D> {
 impl<P, D> PolledIrq<P, D> {
     /// Wrap a pin; `interval_us` is clamped to at least 1.
     pub fn new(pin: P, delay: D, interval_us: u32) -> Self {
-        PolledIrq { pin, delay, interval_us: interval_us.max(1) }
+        PolledIrq {
+            pin,
+            delay,
+            interval_us: interval_us.max(1),
+        }
     }
     /// Give back the pin and delay.
     pub fn release(self) -> (P, D) {
@@ -147,14 +151,27 @@ pub struct FskLongRx {
 
 impl Default for FskLongRx {
     fn default() -> Self {
-        FskLongRx { raw: [0; 256], got: 0, len: 0, rssi: 0, last_us: 0 }
+        FskLongRx {
+            raw: [0; 256],
+            got: 0,
+            len: 0,
+            rssi: 0,
+            last_us: 0,
+        }
     }
 }
 
 impl FskLongRx {
     /// Payload of the packet last returned by `fsk_poll_long`.
+    ///
+    /// Empty when no packet has been stored. The default value used to panic:
+    /// `1..=0` is an empty inclusive range, which Rust rejects.
     pub fn payload(&self) -> &[u8] {
-        &self.raw[1..=self.len]
+        let end = match self.len.checked_add(1) {
+            Some(end) if self.len > 0 && end <= self.raw.len() => end,
+            _ => return &[],
+        };
+        &self.raw[1..end]
     }
     /// True while a packet is partly read.
     pub fn in_progress(&self) -> bool {
@@ -372,7 +389,10 @@ where
         let (br, frac) = fsk::bitrate_regs(cfg.bitrate_bps);
         let fd = fsk::fdev_reg(cfg.fdev_hz);
         let (rxbw, _) = cfg.rx_bw();
-        self.write_raw_burst(fsk::reg::BITRATE_MSB, &[(br >> 8) as u8, br as u8, (fd >> 8) as u8, fd as u8])?;
+        self.write_raw_burst(
+            fsk::reg::BITRATE_MSB,
+            &[(br >> 8) as u8, br as u8, (fd >> 8) as u8, fd as u8],
+        )?;
         self.write_raw_burst(fsk::reg::RX_BW, &[rxbw, rxbw])?;
         let mut ps = [0u8; 11];
         ps[0] = (cfg.preamble_bytes >> 8) as u8;
@@ -380,7 +400,10 @@ where
         ps[2] = cfg.sync_config();
         ps[3..].copy_from_slice(&cfg.sync_word);
         self.write_raw_burst(fsk::reg::PREAMBLE_MSB, &ps)?;
-        self.write_raw_burst(fsk::reg::PACKET_CONFIG1, &[cfg.packet_config1(), cfg.packet_config2(), 0xFF])?;
+        self.write_raw_burst(
+            fsk::reg::PACKET_CONFIG1,
+            &[cfg.packet_config1(), cfg.packet_config2(), 0xFF],
+        )?;
         // TxStartCondition = FifoNotEmpty, FifoThreshold = 32 (refill point for >64-byte packets).
         self.write_raw(fsk::reg::FIFO_THRESH, 0x80 | fsk::FIFO_THRESHOLD)?;
         self.write_raw(fsk::reg::BITRATE_FRAC, frac)
@@ -414,7 +437,7 @@ where
 
     // ---------------------------------------------------------------- mode
 
-    /// Raw `RegOpMode`.
+    // Raw `RegOpMode` is `op_mode` below.
     // ---------------------------------------------------------------- FSK packets
 
     /// FSK: load a variable-length packet (<= 63 bytes, so it fits the 64-byte FIFO
@@ -470,7 +493,11 @@ where
             return Err(Error::PayloadSize);
         }
         self.read_raw_burst(0x00, &mut buf[..len])?;
-        Ok(Some(PacketInfo { len, rssi_dbm: -((rssi as i16) / 2), snr_quarter_db: 0 }))
+        Ok(Some(PacketInfo {
+            len,
+            rssi_dbm: -((rssi as i16) / 2),
+            snr_quarter_db: 0,
+        }))
     }
 
     /// FSK: transmit a variable-length packet of up to 255 bytes. Loads the length
@@ -527,7 +554,12 @@ where
     /// progress for `stall_us` (the chip silently clears the FIFO on a CRC failure) is
     /// abandoned and reported as [`Error::Crc`]. On success the payload is
     /// `st.payload()`.
-    pub fn fsk_poll_long(&mut self, st: &mut FskLongRx, now_us: u32, stall_us: u32) -> R<Option<PacketInfo>, SPI::Error> {
+    pub fn fsk_poll_long(
+        &mut self,
+        st: &mut FskLongRx,
+        now_us: u32,
+        stall_us: u32,
+    ) -> R<Option<PacketInfo>, SPI::Error> {
         let f2 = self.read_raw(fsk::reg::IRQ_FLAGS2)?;
         if f2 & fsk::irq2::PAYLOAD_READY != 0 {
             if st.got == 0 {
@@ -555,7 +587,11 @@ where
                 return Err(Error::PayloadSize);
             }
             st.len = len;
-            return Ok(Some(PacketInfo { len, rssi_dbm: -((st.rssi as i16) / 2), snr_quarter_db: 0 }));
+            return Ok(Some(PacketInfo {
+                len,
+                rssi_dbm: -((st.rssi as i16) / 2),
+                snr_quarter_db: 0,
+            }));
         }
         if f2 & fsk::irq2::FIFO_LEVEL != 0 {
             if st.got == 0 {
@@ -655,7 +691,9 @@ where
     pub fn frequency(&mut self) -> R<u32, SPI::Error> {
         let mut b = [0u8; 3];
         self.read_burst(Register::FrfMsb, &mut b)?;
-        Ok(hz_from_frf(((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32))
+        Ok(hz_from_frf(
+            ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32,
+        ))
     }
 
     /// Apply a LoRa modem configuration (sleep or standby).
@@ -796,7 +834,8 @@ where
     pub fn read_packet(&mut self, buf: &mut [u8]) -> R<Option<PacketInfo>, SPI::Error> {
         let mut st = [0u8; 11];
         self.read_burst(Register::FifoRxCurrentAddr, &mut st)?;
-        let (rx_addr, flags, len, snr, rssi) = (st[0], Irq(st[2]), st[3] as usize, st[9] as i8, st[10]);
+        let (rx_addr, flags, len, snr, rssi) =
+            (st[0], Irq(st[2]), st[3] as usize, st[9] as i8, st[10]);
         if flags.contains(Irq::RX_TIMEOUT) {
             self.clear_irq(Irq::RX_TIMEOUT)?;
             self.mode = Some(Mode::Standby);
@@ -828,7 +867,11 @@ where
 
     /// Block on DIO0 (RxDone) up to `timeout_us`, then read the packet.
     /// Call [`start_receive`](Self::start_receive) first. `Ok(None)` on timeout.
-    pub fn receive(&mut self, buf: &mut [u8], timeout_us: u32) -> R<Option<PacketInfo>, SPI::Error> {
+    pub fn receive(
+        &mut self,
+        buf: &mut [u8],
+        timeout_us: u32,
+    ) -> R<Option<PacketInfo>, SPI::Error> {
         if !self.wait_dio0(timeout_us)? {
             // RX single symbol timeouts do not raise DIO0 (mapped to RxDone): check flags.
             return match self.read_packet(buf) {
@@ -841,7 +884,10 @@ where
 
     /// Instantaneous RSSI in dBm (valid in RX).
     pub fn rssi(&mut self) -> R<i16, SPI::Error> {
-        Ok(rssi_dbm(self.read_register(Register::RssiValue)?, self.high_frequency))
+        Ok(rssi_dbm(
+            self.read_register(Register::RssiValue)?,
+            self.high_frequency,
+        ))
     }
 
     /// Number of valid packets received since entering RX (`RegRxPacketCntValue`).
@@ -883,5 +929,15 @@ where
                 Err(Error::Timeout)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod payload_tests {
+    use super::FskLongRx;
+
+    #[test]
+    fn default_payload_is_empty() {
+        assert!(FskLongRx::default().payload().is_empty());
     }
 }

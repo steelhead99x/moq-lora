@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Mac side: CatWAN RP2040 (SX1276) USB serial -> objects -> live H.264 to ffplay + recording + latency"
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
 publish = false
 
 [dependencies]

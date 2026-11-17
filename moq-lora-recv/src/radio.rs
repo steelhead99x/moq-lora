@@ -28,7 +28,11 @@ impl IrqLine for CdevIrq {
                 return Ok(false);
             }
             let ms = left.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32;
-            let mut pfd = libc::pollfd { fd: self.ev.as_raw_fd(), events: libc::POLLIN | libc::POLLPRI, revents: 0 };
+            let mut pfd = libc::pollfd {
+                fd: self.ev.as_raw_fd(),
+                events: libc::POLLIN | libc::POLLPRI,
+                revents: 0,
+            };
             // SAFETY: one valid pollfd for the duration of the call.
             let n = unsafe { libc::poll(&mut pfd, 1, ms) };
             if n < 0 {
@@ -48,7 +52,6 @@ impl IrqLine for CdevIrq {
 type Spi = ExclusiveDevice<SpidevBus, CdevPin, Delay>;
 pub struct Radio {
     r: Sx1276<Spi, CdevPin, CdevIrq, Delay>,
-    toa_us: u32,
 }
 
 fn e<E: std::fmt::Debug>(err: sx1276::Error<E>) -> anyhow::Error {
@@ -60,14 +63,31 @@ impl Radio {
         let mut bus = SpidevBus::open("/dev/spidev0.0").context("open spidev")?;
         let mut o = SpidevOptions::new();
         o.bits_per_word(8).max_speed_hz(spi_hz);
-        if bus.configure(&o.clone().mode(SpiModeFlags::SPI_MODE_0 | SpiModeFlags::SPI_NO_CS).build()).is_err() {
-            bus.configure(&o.mode(SpiModeFlags::SPI_MODE_0).build()).context("configure spidev")?;
+        if bus
+            .configure(
+                &o.clone()
+                    .mode(SpiModeFlags::SPI_MODE_0 | SpiModeFlags::SPI_NO_CS)
+                    .build(),
+            )
+            .is_err()
+        {
+            bus.configure(&o.mode(SpiModeFlags::SPI_MODE_0).build())
+                .context("configure spidev")?;
         }
         let mut chip = Chip::new("/dev/gpiochip0")?;
-        let nss = chip.get_line(25)?.request(LineRequestFlags::OUTPUT, 1, "moq-lora")?;
-        let rst = chip.get_line(17)?.request(LineRequestFlags::OUTPUT, 1, "moq-lora")?;
-        let ev = chip.get_line(4)?.events(LineRequestFlags::INPUT, EventRequestFlags::RISING_EDGE, "moq-lora")?;
-        let spi = ExclusiveDevice::new(bus, CdevPin::new(nss)?, Delay).map_err(|x| anyhow::anyhow!("NSS: {x}"))?;
+        let nss = chip
+            .get_line(25)?
+            .request(LineRequestFlags::OUTPUT, 1, "moq-lora")?;
+        let rst = chip
+            .get_line(17)?
+            .request(LineRequestFlags::OUTPUT, 1, "moq-lora")?;
+        let ev = chip.get_line(4)?.events(
+            LineRequestFlags::INPUT,
+            EventRequestFlags::RISING_EDGE,
+            "moq-lora",
+        )?;
+        let spi = ExclusiveDevice::new(bus, CdevPin::new(nss)?, Delay)
+            .map_err(|x| anyhow::anyhow!("NSS: {x}"))?;
         let mut r = Sx1276::new(spi, CdevPin::new(rst)?, CdevIrq { ev }, Delay);
         r.init(freq_hz, &sx1276::LoRaConfig::default()).map_err(e)?;
         r.enter_fsk_mode().map_err(e)?;
@@ -79,7 +99,7 @@ impl Radio {
         if r.frequency().map_err(e)?.abs_diff(freq_hz) > 1000 {
             bail!("frequency readback mismatch");
         }
-        Ok(Radio { r, toa_us: cfg.time_on_air_us(255) })
+        Ok(Radio { r })
     }
 
     /// Enter continuous FSK receive.
@@ -89,28 +109,17 @@ impl Radio {
 
     /// Busy-poll the FIFO for frames > 63 B (the HAT wires no DIO1); returns a payload
     /// or None. `Err` = CRC / FIFO error (counted, not fatal).
-    pub fn poll(&mut self, st: &mut sx1276::FskLongRx, now_us: u32, stall_us: u32) -> Result<Option<(Vec<u8>, i16)>, String> {
+    pub fn poll(
+        &mut self,
+        st: &mut sx1276::FskLongRx,
+        now_us: u32,
+        stall_us: u32,
+    ) -> Result<Option<(Vec<u8>, i16)>, String> {
         match self.r.fsk_poll_long(st, now_us, stall_us) {
             Ok(Some(p)) => Ok(Some((st.payload().to_vec(), p.rssi_dbm))),
             Ok(None) => Ok(None),
             Err(x) => Err(format!("{x:?}")),
         }
-    }
-
-    /// Transmit one frame and wait for PacketSent.
-    pub fn send(&mut self, f: &[u8]) -> Result<()> {
-        if f.len() > 63 {
-            self.r.fsk_transmit_long(f, 1_000_000).map_err(e)?;
-        } else {
-            self.r.fsk_start_transmit(f).map_err(e)?;
-        }
-        if !self.r.wait_dio0(self.toa_us * 3 + 200_000).map_err(e)? {
-            bail!("TX timeout");
-        }
-        if !self.r.fsk_finish_transmit().map_err(e)? {
-            bail!("PacketSent flag missing");
-        }
-        Ok(())
     }
 
     pub fn idle(&mut self) {

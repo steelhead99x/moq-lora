@@ -135,7 +135,10 @@ impl FskConfig {
             if !(600..=300_000).contains(&self.fdev_hz) {
                 return Err(FskError::FdevOutOfRange);
             }
-            if self.sync_len == 0 || self.sync_len > 8 || self.sync_word[..self.sync_len as usize].contains(&0) {
+            if self.sync_len == 0
+                || self.sync_len > 8
+                || self.sync_word[..self.sync_len as usize].contains(&0)
+            {
                 return Err(FskError::BadSyncWord);
             }
             return Ok(());
@@ -152,7 +155,10 @@ impl FskConfig {
         if 4 * self.fdev_hz < self.bitrate_bps {
             return Err(FskError::IndexTooLow);
         }
-        if self.sync_len == 0 || self.sync_len > 8 || self.sync_word[..self.sync_len as usize].contains(&0) {
+        if self.sync_len == 0
+            || self.sync_len > 8
+            || self.sync_word[..self.sync_len as usize].contains(&0)
+        {
             return Err(FskError::BadSyncWord);
         }
         Ok(())
@@ -181,7 +187,11 @@ impl FskConfig {
 
     /// Bytes on air for a `len`-byte payload (variable length format).
     pub const fn frame_bytes(&self, len: usize) -> usize {
-        self.preamble_bytes as usize + self.sync_len as usize + 1 + len + if self.crc { 2 } else { 0 }
+        self.preamble_bytes as usize
+            + self.sync_len as usize
+            + 1
+            + len
+            + if self.crc { 2 } else { 0 }
     }
 
     /// Time on air in microseconds.

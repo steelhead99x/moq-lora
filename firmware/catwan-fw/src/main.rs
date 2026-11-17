@@ -12,16 +12,24 @@
 //!   Q <hex>      queue a packet; queued packets are sent back to back ("B <t_us>" at start, "D <t_us> <n>" when drained)
 //!   S            standby + stats      I   info      BOOT   reboot into the RP2040 USB bootloader
 //! Opening the port at 1200 baud and dropping DTR also reboots into the bootloader.
+//!
+//! `L` and `F` accept 2..=17 dBm and program whatever carrier frequency they are
+//! given. The host tools (`moq-lora-send`, `moq-lora-recv`) refuse anything above
+//! +5 dBm and anything outside 902-928 MHz (and 925.0 MHz) before they send these
+//! commands. The measured image is `firmware/catwan-fw-v5.uf2`; it was not
+//! regenerated here. Tightening the clamp means a new image and a reflash.
 #![no_std]
 #![no_main]
 
 use core::fmt::Write as _;
 use embedded_hal::digital::OutputPin;
 use embedded_hal_bus::spi::ExclusiveDevice;
+use hal::{
+    clocks::init_clocks_and_plls, fugit::RateExtU32, pac, usb::UsbBus, Clock, Sio, Watchdog,
+};
 use heapless::{Deque, String, Vec};
 use panic_halt as _;
 use rp2040_hal as hal;
-use hal::{clocks::init_clocks_and_plls, fugit::RateExtU32, pac, usb::UsbBus, Clock, Sio, Watchdog};
 use sx1276::{config::*, fsk::FskConfig, IrqLine, PolledIrq, RxMode, Sx1276};
 use usb_device::{class_prelude::UsbBusAllocator, prelude::*};
 use usbd_serial::SerialPort;
@@ -34,17 +42,36 @@ const XOSC_HZ: u32 = 12_000_000;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Copy, Clone, PartialEq)]
-enum Modem { Lora, Fsk }
+enum Modem {
+    Lora,
+    Fsk,
+}
 #[derive(Copy, Clone, PartialEq)]
-enum State { Idle, Rx, Tx }
+enum State {
+    Idle,
+    Rx,
+    Tx,
+}
 
 fn hexval(c: u8) -> Option<u8> {
-    match c { b'0'..=b'9' => Some(c - b'0'), b'a'..=b'f' => Some(c - b'a' + 10), b'A'..=b'F' => Some(c - b'A' + 10), _ => None }
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
 }
 fn unhex(s: &[u8], out: &mut Vec<u8, 255>) -> bool {
-    if s.len() % 2 != 0 || s.len() / 2 > 255 { return false; }
+    if !s.len().is_multiple_of(2) || s.len() / 2 > 255 {
+        return false;
+    }
     for p in s.chunks(2) {
-        match (hexval(p[0]), hexval(p[1])) { (Some(a), Some(b)) => { let _ = out.push(a << 4 | b); } _ => return false }
+        match (hexval(p[0]), hexval(p[1])) {
+            (Some(a), Some(b)) => {
+                let _ = out.push(a << 4 | b);
+            }
+            _ => return false,
+        }
     }
     true
 }
@@ -63,8 +90,13 @@ fn hex_into<const N: usize>(s: &mut String<N>, data: &[u8]) {
 struct Out(Deque<u8, 16384>, u32);
 impl Out {
     fn line(&mut self, s: &[u8]) {
-        if self.0.capacity() - self.0.len() < s.len() + 1 { self.1 += 1; return; }
-        for &b in s { let _ = self.0.push_back(b); }
+        if self.0.capacity() - self.0.len() < s.len() + 1 {
+            self.1 += 1;
+            return;
+        }
+        for &b in s {
+            let _ = self.0.push_back(b);
+        }
         let _ = self.0.push_back(b'\n');
     }
 }
@@ -73,10 +105,25 @@ impl Out {
 fn main() -> ! {
     let mut pac = pac::Peripherals::take().unwrap();
     let mut watchdog = Watchdog::new(pac.WATCHDOG);
-    let clocks = init_clocks_and_plls(XOSC_HZ, pac.XOSC, pac.CLOCKS, pac.PLL_SYS, pac.PLL_USB, &mut pac.RESETS, &mut watchdog).ok().unwrap();
+    let clocks = init_clocks_and_plls(
+        XOSC_HZ,
+        pac.XOSC,
+        pac.CLOCKS,
+        pac.PLL_SYS,
+        pac.PLL_USB,
+        &mut pac.RESETS,
+        &mut watchdog,
+    )
+    .ok()
+    .unwrap();
     let timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
     let sio = Sio::new(pac.SIO);
-    let pins = hal::gpio::Pins::new(pac.IO_BANK0, pac.PADS_BANK0, sio.gpio_bank0, &mut pac.RESETS);
+    let pins = hal::gpio::Pins::new(
+        pac.IO_BANK0,
+        pac.PADS_BANK0,
+        sio.gpio_bank0,
+        &mut pac.RESETS,
+    );
 
     let miso = pins.gpio16.into_function::<hal::gpio::FunctionSpi>();
     let sck = pins.gpio18.into_function::<hal::gpio::FunctionSpi>();
@@ -86,15 +133,28 @@ fn main() -> ! {
     let rst = pins.gpio21.into_push_pull_output();
     let dio0 = pins.gpio10.into_pull_down_input();
     let mut led = pins.gpio25.into_push_pull_output();
-    let spi = hal::spi::Spi::<_, _, _, 8>::new(pac.SPI0, (mosi, miso, sck))
-        .init(&mut pac.RESETS, clocks.peripheral_clock.freq(), 10u32.MHz(), embedded_hal::spi::MODE_0);
+    let spi = hal::spi::Spi::<_, _, _, 8>::new(pac.SPI0, (mosi, miso, sck)).init(
+        &mut pac.RESETS,
+        clocks.peripheral_clock.freq(),
+        10u32.MHz(),
+        embedded_hal::spi::MODE_0,
+    );
     let dev = ExclusiveDevice::new(spi, nss, timer).unwrap();
     let mut radio = Sx1276::new(dev, rst, PolledIrq::new(dio0, timer, 5), timer);
 
-    let usb_bus = UsbBusAllocator::new(UsbBus::new(pac.USBCTRL_REGS, pac.USBCTRL_DPRAM, clocks.usb_clock, true, &mut pac.RESETS));
+    let usb_bus = UsbBusAllocator::new(UsbBus::new(
+        pac.USBCTRL_REGS,
+        pac.USBCTRL_DPRAM,
+        clocks.usb_clock,
+        true,
+        &mut pac.RESETS,
+    ));
     let mut serial = SerialPort::new(&usb_bus);
     let mut usb = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x2e8a, 0x000a))
-        .strings(&[StringDescriptors::default().manufacturer("kixel sx1276-rs").product("CatWAN sx1276-rs link fw").serial_number("613863E6354E26A3")])
+        .strings(&[StringDescriptors::default()
+            .manufacturer("kixel sx1276-rs")
+            .product("CatWAN sx1276-rs link fw")
+            .serial_number("613863E6354E26A3")])
         .unwrap()
         .device_class(usbd_serial::USB_CLASS_CDC)
         .build();
@@ -119,7 +179,9 @@ fn main() -> ! {
     let mut lst = sx1276::FskLongRx::default();
 
     loop {
-        if usb.poll(&mut [&mut serial]) {}
+        // `poll` drives the USB state machine. The bool is "still busy"; the loop
+        // always continues either way.
+        let _ = usb.poll(&mut [&mut serial]);
         // 1200-baud touch -> bootloader
         if serial.line_coding().data_rate() == 1200 && !serial.dtr() {
             hal::rom_data::reset_to_usb_boot(1 << 25, 0);
@@ -134,60 +196,126 @@ fn main() -> ! {
                             // execute
                             let mut it = line.split(|&c| c == b' ').filter(|t| !t.is_empty());
                             let cmd = it.next().unwrap_or(b"");
-                            let mut num = || -> u32 { it.next().and_then(|t| core::str::from_utf8(t).ok()).and_then(|t| t.parse().ok()).unwrap_or(0) };
+                            let mut num = || -> u32 {
+                                it.next()
+                                    .and_then(|t| core::str::from_utf8(t).ok())
+                                    .and_then(|t| t.parse().ok())
+                                    .unwrap_or(0)
+                            };
                             s.clear();
                             match cmd {
                                 b"L" => {
-                                    let (f, sf, bw, cr, dbm, il) = (num(), num(), num(), num(), num(), num());
-                                    let bwe = match bw { 125_000 => Bandwidth::Bw125kHz, 250_000 => Bandwidth::Bw250kHz, _ => Bandwidth::Bw500kHz };
+                                    let (f, sf, bw, cr, dbm, il) =
+                                        (num(), num(), num(), num(), num(), num());
+                                    let bwe = match bw {
+                                        125_000 => Bandwidth::Bw125kHz,
+                                        250_000 => Bandwidth::Bw250kHz,
+                                        _ => Bandwidth::Bw500kHz,
+                                    };
                                     let cfg = LoRaConfig {
                                         bandwidth: bwe,
-                                        spreading_factor: SpreadingFactor::from_u8(sf as u8).unwrap_or(SpreadingFactor::Sf7),
-                                        coding_rate: CodingRate::from_denominator(cr as u8).unwrap_or(CodingRate::Cr4_5),
-                                        header: if il > 0 { HeaderMode::Implicit { payload_len: il as u8 } } else { HeaderMode::Explicit },
+                                        spreading_factor: SpreadingFactor::from_u8(sf as u8)
+                                            .unwrap_or(SpreadingFactor::Sf7),
+                                        coding_rate: CodingRate::from_denominator(cr as u8)
+                                            .unwrap_or(CodingRate::Cr4_5),
+                                        header: if il > 0 {
+                                            HeaderMode::Implicit {
+                                                payload_len: il as u8,
+                                            }
+                                        } else {
+                                            HeaderMode::Explicit
+                                        },
                                         ..LoRaConfig::default()
                                     };
-                                    let r = radio.init(f, &cfg).and_then(|_| radio.set_tx_power(PaOutput::PaBoost, dbm.clamp(2, 17) as i8));
-                                    modem = Modem::Lora; state = State::Idle;
+                                    let r = radio.init(f, &cfg).and_then(|_| {
+                                        radio
+                                            .set_tx_power(PaOutput::PaBoost, dbm.clamp(2, 17) as i8)
+                                    });
+                                    modem = Modem::Lora;
+                                    state = State::Idle;
                                     let _ = write!(s, "OK L {} {:?}", f, r.err());
                                 }
                                 b"F" => {
-                                    let (f, br, fd, dbm, pre, lg, force) = (num(), num(), num(), num(), num(), num(), num());
-                                    fsk_long = lg != 0; fsk_stall = 36 * 8_000_000 / br.max(1);
-                                    let cfg = FskConfig { bitrate_bps: br, fdev_hz: fd, preamble_bytes: if pre == 0 { 4 } else { pre as u16 }, unchecked: force != 0, ..FskConfig::default() };
-                                    let r = radio.init(f, &LoRaConfig::default())
+                                    let (f, br, fd, dbm, pre, lg, force) =
+                                        (num(), num(), num(), num(), num(), num(), num());
+                                    fsk_long = lg != 0;
+                                    fsk_stall = 36 * 8_000_000 / br.max(1);
+                                    let cfg = FskConfig {
+                                        bitrate_bps: br,
+                                        fdev_hz: fd,
+                                        preamble_bytes: if pre == 0 { 4 } else { pre as u16 },
+                                        unchecked: force != 0,
+                                        ..FskConfig::default()
+                                    };
+                                    let r = radio
+                                        .init(f, &LoRaConfig::default())
                                         .and_then(|_| radio.enter_fsk_mode())
                                         .and_then(|_| radio.set_frequency(f))
                                         .and_then(|_| radio.write_raw(0x0C, 0x23)) // LNA max gain + HF boost
                                         .and_then(|_| radio.configure_fsk(&cfg))
-                                        .and_then(|_| radio.set_tx_power(PaOutput::PaBoost, dbm.clamp(2, 17) as i8))
+                                        .and_then(|_| {
+                                            radio.set_tx_power(
+                                                PaOutput::PaBoost,
+                                                dbm.clamp(2, 17) as i8,
+                                            )
+                                        })
                                         .and_then(|_| radio.standby());
-                                    modem = Modem::Fsk; state = State::Idle;
+                                    modem = Modem::Fsk;
+                                    state = State::Idle;
                                     let _ = write!(s, "OK F {} {} {} {:?}", f, br, fd, r.err());
                                 }
                                 b"R" => {
-                                    let r = if modem == Modem::Lora { radio.start_receive(RxMode::Continuous) } else { radio.fsk_start_receive() };
-                                    state = State::Rx; rx_ok = 0; rx_err = 0;
+                                    let r = if modem == Modem::Lora {
+                                        radio.start_receive(RxMode::Continuous)
+                                    } else {
+                                        radio.fsk_start_receive()
+                                    };
+                                    state = State::Rx;
+                                    rx_ok = 0;
+                                    rx_err = 0;
                                     let _ = write!(s, "OK R {:?}", r.err());
                                 }
                                 b"Q" => {
                                     let mut p: Vec<u8, 255> = Vec::new();
-                                    if let Some(h) = it.next() { if unhex(h, &mut p) && !p.is_empty() { let _ = txq.push_back(p); } }
-                                    if state != State::Tx { state = State::Tx; tx_n = 0; }
+                                    if let Some(h) = it.next() {
+                                        if unhex(h, &mut p) && !p.is_empty() {
+                                            let _ = txq.push_back(p);
+                                        }
+                                    }
+                                    if state != State::Tx {
+                                        state = State::Tx;
+                                        tx_n = 0;
+                                    }
                                 }
                                 b"S" => {
                                     let _ = radio.standby();
-                                    state = State::Idle; txq.clear(); tx_busy = false;
-                                    let _ = write!(s, "OK S rx_ok={} rx_err={} tx={} out_drop={}", rx_ok, rx_err, tx_n, out.1);
+                                    state = State::Idle;
+                                    txq.clear();
+                                    tx_busy = false;
+                                    let _ = write!(
+                                        s,
+                                        "OK S rx_ok={} rx_err={} tx={} out_drop={}",
+                                        rx_ok, rx_err, tx_n, out.1
+                                    );
                                 }
                                 b"I" => {
                                     let v = radio.version().unwrap_or(0);
-                                    let _ = write!(s, "I catwan-fw {} sx_version=0x{:02x} t_us={}", VERSION, v, now());
+                                    let _ = write!(
+                                        s,
+                                        "I catwan-fw {} sx_version=0x{:02x} t_us={}",
+                                        VERSION,
+                                        v,
+                                        now()
+                                    );
                                 }
                                 b"BOOT" => hal::rom_data::reset_to_usb_boot(1 << 25, 0),
-                                _ => { let _ = write!(s, "ERR"); }
+                                _ => {
+                                    let _ = write!(s, "ERR");
+                                }
                             }
-                            if !s.is_empty() { out.line(s.as_bytes()); }
+                            if !s.is_empty() {
+                                out.line(s.as_bytes());
+                            }
                             line.clear();
                         }
                     } else if line.push(b).is_err() {
@@ -203,7 +331,10 @@ fn main() -> ! {
                 if modem == Modem::Fsk && fsk_long {
                     let t = now();
                     let r = match radio.fsk_poll_long(&mut lst, t as u32, fsk_stall) {
-                        Ok(Some(p)) => { buf[..p.len].copy_from_slice(lst.payload()); Ok(Some(p)) }
+                        Ok(Some(p)) => {
+                            buf[..p.len].copy_from_slice(lst.payload());
+                            Ok(Some(p))
+                        }
                         x => x,
                     };
                     s.clear();
@@ -214,12 +345,21 @@ fn main() -> ! {
                             hex_into(&mut s, &buf[..p.len]);
                         }
                         Ok(None) => {}
-                        Err(e) => { rx_err += 1; let _ = write!(s, "X {} {:?}", t, e); }
+                        Err(e) => {
+                            rx_err += 1;
+                            let _ = write!(s, "X {} {:?}", t, e);
+                        }
                     }
-                    if !s.is_empty() { out.line(s.as_bytes()); }
+                    if !s.is_empty() {
+                        out.line(s.as_bytes());
+                    }
                 } else if radio.irq_line().is_asserted().unwrap_or(false) {
                     let t = now();
-                    let r = if modem == Modem::Lora { radio.read_packet(&mut buf) } else { radio.fsk_read_packet(&mut buf) };
+                    let r = if modem == Modem::Lora {
+                        radio.read_packet(&mut buf)
+                    } else {
+                        radio.fsk_read_packet(&mut buf)
+                    };
                     s.clear();
                     match r {
                         Ok(Some(p)) => {
@@ -230,30 +370,60 @@ fn main() -> ! {
                             let _ = led.set_low();
                         }
                         Ok(None) => {}
-                        Err(e) => { rx_err += 1; let _ = write!(s, "X {} {:?}", t, e); }
+                        Err(e) => {
+                            rx_err += 1;
+                            let _ = write!(s, "X {} {:?}", t, e);
+                        }
                     }
-                    if !s.is_empty() { out.line(s.as_bytes()); }
+                    if !s.is_empty() {
+                        out.line(s.as_bytes());
+                    }
                 }
             }
             State::Tx => {
                 if tx_busy {
                     if radio.irq_line().is_asserted().unwrap_or(false) {
-                        let _ = if modem == Modem::Lora { radio.finish_transmit() } else { radio.fsk_finish_transmit() };
-                        tx_busy = false; tx_n += 1;
-                        if txq.is_empty() { s.clear(); let _ = write!(s, "D {} {} {}", now(), tx_n, now() - tx_started); out.line(s.as_bytes()); }
+                        let _ = if modem == Modem::Lora {
+                            radio.finish_transmit()
+                        } else {
+                            radio.fsk_finish_transmit()
+                        };
+                        tx_busy = false;
+                        tx_n += 1;
+                        if txq.is_empty() {
+                            s.clear();
+                            let _ = write!(s, "D {} {} {}", now(), tx_n, now() - tx_started);
+                            out.line(s.as_bytes());
+                        }
                     } else if now() - tx_pkt_t > 2_000_000 {
                         // v5: per-packet timeout. v4 timed out 60 s after the *burst* started, so a
                         // TX stream longer than a minute began each packet on top of the last one.
                         let _ = radio.standby();
-                        tx_busy = false; out.line(b"ERR txtimeout");
+                        tx_busy = false;
+                        out.line(b"ERR txtimeout");
                     }
                 }
                 if !tx_busy {
                     if let Some(p) = txq.pop_front() {
-                        if tx_n == 0 { tx_started = now(); s.clear(); let _ = write!(s, "B {}", tx_started); out.line(s.as_bytes()); }
+                        if tx_n == 0 {
+                            tx_started = now();
+                            s.clear();
+                            let _ = write!(s, "B {}", tx_started);
+                            out.line(s.as_bytes());
+                        }
                         tx_pkt_t = now();
-                        let r = if modem == Modem::Lora { radio.start_transmit(&p) } else if p.len() > 63 { radio.fsk_transmit_long(&p, 1_000_000) } else { radio.fsk_start_transmit(&p) };
-                        if r.is_ok() { tx_busy = true; } else { out.line(b"ERR tx"); }
+                        let r = if modem == Modem::Lora {
+                            radio.start_transmit(&p)
+                        } else if p.len() > 63 {
+                            radio.fsk_transmit_long(&p, 1_000_000)
+                        } else {
+                            radio.fsk_start_transmit(&p)
+                        };
+                        if r.is_ok() {
+                            tx_busy = true;
+                        } else {
+                            out.line(b"ERR tx");
+                        }
                     }
                 }
             }
@@ -266,7 +436,14 @@ fn main() -> ! {
             let mut chunk = [0u8; 64];
             chunk[..n].copy_from_slice(&a[..n]);
             match serial.write(&chunk[..n]) {
-                Ok(w) => { for _ in 0..w { out.0.pop_front(); } if w < n { break; } }
+                Ok(w) => {
+                    for _ in 0..w {
+                        out.0.pop_front();
+                    }
+                    if w < n {
+                        break;
+                    }
+                }
                 Err(_) => break,
             }
         }

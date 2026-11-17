@@ -50,7 +50,7 @@ latency. Swap `--src` for a V4L2 camera later (see [section 8](#8-going-further)
 
 ## 2. Prepare the Pi
 
-1. Raspberry Pi OS (Bookworm or later, 32-bit is fine). Enable SPI: `sudo raspi-config` ->
+1. Raspberry Pi OS (the bench Pi ran Trixie, 32-bit; Bookworm or later should be fine). Enable SPI: `sudo raspi-config` ->
    Interface Options -> SPI, or add `dtparam=spi=on` to the boot config, then reboot.
 2. Give your user the device groups so nothing needs root:
    `sudo usermod -aG spi,gpio $USER` (log out and back in). Check: `ls -l /dev/spidev0.0 /dev/gpiochip0`.
@@ -58,11 +58,12 @@ latency. Swap `--src` for a V4L2 camera later (see [section 8](#8-going-further)
    (We measured the Pi's hardware encoder `h264_v4l2m2m` too; it works but adds ~275 ms of
    encoder delay versus ~20-24 ms for x264 `ultrafast`/`zerolatency`, so x264 is the default.)
 4. Make sure the laptop can `ssh` to the Pi without a password (the test harness uses it for
-   clock checks): `ssh-copy-id pi@<pi>`, and an ssh alias helps (`Host pi2b` in `~/.ssh/config`).
+   clock checks): `ssh-copy-id <user>@<pi>`, and an ssh alias helps (`Host pi` in `~/.ssh/config`).
 
 ## 3. Build
 
-Everything is one Cargo workspace. On a Linux or macOS machine with Rust >= 1.90:
+Everything is one Cargo workspace. On a Linux or macOS machine with Rust 1.90 or newer
+(the `rust-version` in `Cargo.toml`; rind's own MSRV):
 
 ```sh
 git clone <this repo> moq-lora && cd moq-lora
@@ -72,11 +73,16 @@ cargo build --release                          # host tools: send, recv, report
 # The Pi binary: a static armv7 musl executable, linked with rust-lld (no cross gcc needed)
 rustup target add armv7-unknown-linux-musleabihf
 cargo build --release -p moq-lora-send -p moq-lora-recv --target armv7-unknown-linux-musleabihf
-scp target/armv7-unknown-linux-musleabihf/release/moq-lora-{send,recv} pi2b:moq-lora/
+scp target/armv7-unknown-linux-musleabihf/release/moq-lora-{send,recv} pi:moq-lora/
 ```
 
-`.cargo/config.toml` already points the armv7 target at `rust-lld`. The binaries are
-~1.4 MB each and need nothing on the Pi except ffmpeg.
+`.cargo/config.toml` points `armv7-unknown-linux-musleabihf` at `rust-lld`. Those
+are the binaries to copy to the Pi: static, about 1.4 MB, nothing needed on the
+Pi except ffmpeg.
+
+`armv7-unknown-linux-gnueabihf` also builds, linked with `arm-linux-gnueabihf-gcc`
+(package `gcc-arm-linux-gnueabihf`). That binary is dynamically linked against
+glibc. `rust-lld` cannot see that sysroot, so it is not the default.
 
 ## 4. Flash the CatWAN firmware
 
@@ -144,7 +150,7 @@ Both ends must use the same bitrate and deviation.
 
 ## 6. Measuring properly
 
-Latency needs the two clocks compared. `moq-lora-recv --clock-check pi2b` runs an ssh
+Latency needs the two clocks compared. `moq-lora-recv --clock-check pi` runs an ssh
 ping-pong and prints the Pi-minus-laptop offset; pass it as `--clock-offset-ms` (positive if
 the capture clock is ahead). Our clocks drifted 20-40 ms between runs, so the harness
 re-checks before and after each run.
@@ -158,7 +164,9 @@ scripts/bench.sh                                     # the matched rind off/on m
 cargo run --release -p moq-lora-report -- runs/*/    # markdown table
 ```
 
-Edit the port, the ssh alias and the key paths at the top of the scripts.
+Set `PORT`, `PI`, and the key paths in the environment or in `scripts/env.sh`. See
+[scripts/README.md](scripts/README.md). `run2.sh` is Pi to laptop; `rev.sh` is laptop to Pi.
+They are the bench harness, not leftover scratch.
 
 What gets measured:
 
@@ -179,13 +187,16 @@ Each MoQ object can be sealed with authenticated encryption from
 AES-256-GCM also available):
 
 ```sh
-( umask 077; openssl rand -hex 32 > moq-lora-key.hex )      # once; never commit it
-scp moq-lora-key.hex pi2b:                                  # same key on both ends
+( umask 077; openssl rand -hex 32 > moq-lora-key.hex )      # once; mode 0600; never commit it
+scp moq-lora-key.hex pi:                                    # same key on both ends
 # Pi
 ./moq-lora-send ... --key-file ~/moq-lora-key.hex [--cipher chacha20poly1305|aes128gcm|aes256gcm]
 # laptop
 ./moq-lora-recv ... --key-file moq-lora-key.hex   [--cipher ...]
 ```
+
+Both tools refuse the file if group or other permission bits are set. The path is an
+argument; the key itself is not.
 
 On the air an object becomes `session u32 | ciphertext | tag 16` (20 bytes more per object).
 The nonce is `session | group | object`; the session id is random per run and is redrawn
@@ -228,3 +239,9 @@ group, object, sizes) stay in clear.
   band at all (Europe uses 868 MHz, with duty-cycle limits this link would exceed).
 * The SX1276 and RFM95W modules are not certified for this use as configured here; you are the
   operator and responsible for the emissions.
+* The host tools enforce the frequency and +5 dBm limits above. The CatWAN firmware does not:
+  its `F` and `L` commands accept 2 to 17 dBm and the frequency number they are given, and
+  350 kbit/s is outside the SX1276 datasheet's characterized FSK settings (`:x` on the
+  profile acknowledges that). Do not type those commands into a raw serial session if you
+  are counting on the host checks. The prebuilt `firmware/catwan-fw-v5.uf2` matches the
+  source in this tree, including that wider clamp.

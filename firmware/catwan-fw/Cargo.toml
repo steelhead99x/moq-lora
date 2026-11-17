@@ -3,6 +3,7 @@ name = "catwan-fw"
 version = "0.5.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/steelhead99x/moq-lora"
 description = "USB-serial SX1276 link-test firmware for the Electronic Cats CatWAN USB Stick RP2040"
 
 [workspace]
@@ -20,8 +21,14 @@ usbd-serial = "0.2"
 heapless = "0.8"
 panic-halt = "1.0"
 
+[profile.dev]
+panic = "abort"
+
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
 debug = 2
+# thumbv6m has no unwinder. The shipped v5 image was built this way; without
+# it rustc 1.90 refuses to compile the binary.
+panic = "abort"

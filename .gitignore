@@ -1,4 +1,20 @@
 target/
+**/*.rs.bk
+
+# macOS AppleDouble / Finder junk (a tarball of the bench logs brought a lot of these in)
+._*
+.DS_Store
+
+# local runs and encoded video the tools write
+/run/
+runs/
 *.h264
 *.ts
-/run/
+
+# pre-shared keys. Referenced by path only; never commit one.
+moq-lora-key.hex
+*.key
+key.hex
+
+# picotool backups of a stick
+catwan-backup-*.bin

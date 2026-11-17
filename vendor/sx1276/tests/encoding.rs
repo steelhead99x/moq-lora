@@ -13,7 +13,14 @@ fn frequency_math() {
     assert_eq!(hz_from_frf(0xE4_C000), 915_000_000);
     assert_eq!(hz_from_frf(0x6C_8000), 434_000_000);
     // Round trip within half a step (61.035 Hz / 2).
-    for hz in [137_000_000u32, 433_175_000, 868_300_000, 902_300_000, 927_500_000, 1_020_000_000] {
+    for hz in [
+        137_000_000u32,
+        433_175_000,
+        868_300_000,
+        902_300_000,
+        927_500_000,
+        1_020_000_000,
+    ] {
         let back = hz_from_frf(frf_from_hz(hz));
         assert!((back as i64 - hz as i64).abs() <= 31, "{hz} -> {back}");
     }
@@ -54,7 +61,9 @@ fn modem_config_bitfields() {
     // SF12/500k: Tsym = 8.192 ms -> no LDRO
     assert_eq!(c.symbol_time_us(), 8192);
     assert_eq!(c.modem_config3(), 0x04);
-    let back = LoRaConfig::from_registers(c.modem_config1(), c.modem_config2(), c.modem_config3(), &c).unwrap();
+    let back =
+        LoRaConfig::from_registers(c.modem_config1(), c.modem_config2(), c.modem_config3(), &c)
+            .unwrap();
     assert_eq!(back.bandwidth, c.bandwidth);
     assert_eq!(back.spreading_factor, c.spreading_factor);
     assert_eq!(back.coding_rate, c.coding_rate);
@@ -62,15 +71,26 @@ fn modem_config_bitfields() {
     assert_eq!(back.header, c.header);
     assert_eq!(back.symbol_timeout, 0x3FF);
 
-    for (bw, bits) in [(Bandwidth::Bw7_8kHz, 0), (Bandwidth::Bw62_5kHz, 6), (Bandwidth::Bw250kHz, 8)] {
-        let c = LoRaConfig { bandwidth: bw, ..Default::default() };
+    for (bw, bits) in [
+        (Bandwidth::Bw7_8kHz, 0),
+        (Bandwidth::Bw62_5kHz, 6),
+        (Bandwidth::Bw250kHz, 8),
+    ] {
+        let c = LoRaConfig {
+            bandwidth: bw,
+            ..Default::default()
+        };
         assert_eq!(c.modem_config1() >> 4, bits);
         assert_eq!(Bandwidth::from_bits(bits), Some(bw));
         assert_eq!(Bandwidth::from_hz(bw.hz()), Some(bw));
     }
     for sf in 6..=12u8 {
         let s = SpreadingFactor::from_u8(sf).unwrap();
-        let c = LoRaConfig { spreading_factor: s, header: HeaderMode::Implicit { payload_len: 8 }, ..Default::default() };
+        let c = LoRaConfig {
+            spreading_factor: s,
+            header: HeaderMode::Implicit { payload_len: 8 },
+            ..Default::default()
+        };
         assert_eq!(c.modem_config2() >> 4, sf);
     }
     assert_eq!(SpreadingFactor::from_u8(5), None);
@@ -79,26 +99,45 @@ fn modem_config_bitfields() {
 
 #[test]
 fn ldro_auto() {
-    let sf12 = LoRaConfig { spreading_factor: SpreadingFactor::Sf12, ..Default::default() };
+    let sf12 = LoRaConfig {
+        spreading_factor: SpreadingFactor::Sf12,
+        ..Default::default()
+    };
     assert_eq!(sf12.symbol_time_us(), 32_768);
     assert!(sf12.ldro_enabled());
     assert_eq!(sf12.modem_config3(), 0x0C);
-    let sf11_250 = LoRaConfig { spreading_factor: SpreadingFactor::Sf11, bandwidth: Bandwidth::Bw250kHz, ..Default::default() };
+    let sf11_250 = LoRaConfig {
+        spreading_factor: SpreadingFactor::Sf11,
+        bandwidth: Bandwidth::Bw250kHz,
+        ..Default::default()
+    };
     assert!(!sf11_250.ldro_enabled());
-    let forced = LoRaConfig { low_data_rate_optimize: LowDataRateOptimize::On, ..Default::default() };
+    let forced = LoRaConfig {
+        low_data_rate_optimize: LowDataRateOptimize::On,
+        ..Default::default()
+    };
     assert_eq!(forced.modem_config3(), 0x0C);
 }
 
 #[test]
 fn sf6_rules() {
-    let bad = LoRaConfig { spreading_factor: SpreadingFactor::Sf6, ..Default::default() };
+    let bad = LoRaConfig {
+        spreading_factor: SpreadingFactor::Sf6,
+        ..Default::default()
+    };
     assert_eq!(bad.validate(), Err(ConfigError::Sf6RequiresImplicitHeader));
-    let ok = LoRaConfig { header: HeaderMode::Implicit { payload_len: 16 }, ..bad };
+    let ok = LoRaConfig {
+        header: HeaderMode::Implicit { payload_len: 16 },
+        ..bad
+    };
     assert!(ok.validate().is_ok());
     assert_eq!(ok.detect_optimize(), 0x05);
     assert_eq!(ok.detection_threshold(), 0x0C);
     assert_eq!(ok.modem_config1() & 1, 1);
-    let zero = LoRaConfig { header: HeaderMode::Implicit { payload_len: 0 }, ..Default::default() };
+    let zero = LoRaConfig {
+        header: HeaderMode::Implicit { payload_len: 0 },
+        ..Default::default()
+    };
     assert_eq!(zero.validate(), Err(ConfigError::InvalidPayloadLength));
 }
 
@@ -110,10 +149,16 @@ fn time_on_air_and_rate() {
     assert_eq!(c.time_on_air_us(10), 41_216);
     assert_eq!(c.bit_rate_bps(), 5_468);
     // SF12/125k/CR4-5 + LDRO, 51 B -> 2465.792 ms
-    let slow = LoRaConfig { spreading_factor: SpreadingFactor::Sf12, ..Default::default() };
+    let slow = LoRaConfig {
+        spreading_factor: SpreadingFactor::Sf12,
+        ..Default::default()
+    };
     assert_eq!(slow.time_on_air_us(51), 2_465_792);
     // Fastest standard setting: SF7/500k, 255 B: 390.25 symbols x 256 us
-    let fast = LoRaConfig { bandwidth: Bandwidth::Bw500kHz, ..Default::default() };
+    let fast = LoRaConfig {
+        bandwidth: Bandwidth::Bw500kHz,
+        ..Default::default()
+    };
     assert_eq!(fast.bit_rate_bps(), 21_875);
     assert_eq!(fast.time_on_air_us(255), 99_904);
 }
@@ -128,11 +173,20 @@ fn pa_encoding() {
     assert_eq!((s.pa_config, s.pa_dac, s.ocp_ma), (0xFF, 0x87, 140));
     let s = encode_pa(PaOutput::PaBoost, 18).unwrap();
     assert_eq!(s.pa_config, 0xFD);
-    assert_eq!(encode_pa(PaOutput::PaBoost, 1), Err(ConfigError::PowerOutOfRange));
-    assert_eq!(encode_pa(PaOutput::PaBoost, 21), Err(ConfigError::PowerOutOfRange));
+    assert_eq!(
+        encode_pa(PaOutput::PaBoost, 1),
+        Err(ConfigError::PowerOutOfRange)
+    );
+    assert_eq!(
+        encode_pa(PaOutput::PaBoost, 21),
+        Err(ConfigError::PowerOutOfRange)
+    );
     assert_eq!(encode_pa(PaOutput::Rfo, 14).unwrap().pa_config, 0x7E);
     assert_eq!(encode_pa(PaOutput::Rfo, -4).unwrap().pa_config, 0x00);
-    assert_eq!(encode_pa(PaOutput::Rfo, 16), Err(ConfigError::PowerOutOfRange));
+    assert_eq!(
+        encode_pa(PaOutput::Rfo, 16),
+        Err(ConfigError::PowerOutOfRange)
+    );
 }
 
 #[test]
@@ -152,7 +206,11 @@ fn rssi_snr() {
     assert_eq!(packet_rssi_dbm(60, -20, true), -157 + 60 - 5);
     assert_eq!(packet_rssi_dbm(60, 0, false), -164 + 64);
     assert_eq!(rssi_dbm(50, true), -107);
-    let p = PacketInfo { len: 1, rssi_dbm: 0, snr_quarter_db: -10 };
+    let p = PacketInfo {
+        len: 1,
+        rssi_dbm: 0,
+        snr_quarter_db: -10,
+    };
     assert_eq!(p.snr_db(), -2.5);
 }
 
@@ -195,8 +253,32 @@ fn fsk_encoding() {
     assert_eq!(c.packet_config1(), 0xD0);
     assert_eq!(c.frame_bytes(255), 4 + 2 + 1 + 255 + 2);
     assert_eq!(c.time_on_air_us(255), 264 * 8 * 1_000_000 / 300_000);
-    assert_eq!(FskConfig { fdev_hz: 120_000, ..c }.validate(), Err(FskError::TooWide));
-    assert_eq!(FskConfig { fdev_hz: 50_000, ..c }.validate(), Err(FskError::IndexTooLow));
-    assert_eq!(FskConfig { bitrate_bps: 400_000, ..c }.validate(), Err(FskError::BitrateOutOfRange));
-    assert_eq!(FskConfig { sync_len: 0, ..c }.validate(), Err(FskError::BadSyncWord));
+    assert_eq!(
+        FskConfig {
+            fdev_hz: 120_000,
+            ..c
+        }
+        .validate(),
+        Err(FskError::TooWide)
+    );
+    assert_eq!(
+        FskConfig {
+            fdev_hz: 50_000,
+            ..c
+        }
+        .validate(),
+        Err(FskError::IndexTooLow)
+    );
+    assert_eq!(
+        FskConfig {
+            bitrate_bps: 400_000,
+            ..c
+        }
+        .validate(),
+        Err(FskError::BitrateOutOfRange)
+    );
+    assert_eq!(
+        FskConfig { sync_len: 0, ..c }.validate(),
+        Err(FskError::BadSyncWord)
+    );
 }

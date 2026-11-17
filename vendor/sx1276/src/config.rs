@@ -265,18 +265,30 @@ impl LoRaConfig {
 
     /// `RegModemConfig3`: LowDataRateOptimize(3) | AgcAutoOn(2) (always on).
     pub const fn modem_config3(&self) -> u8 {
-        let ldro = if self.ldro_enabled() { modem3::LOW_DATA_RATE_OPTIMIZE } else { 0 };
+        let ldro = if self.ldro_enabled() {
+            modem3::LOW_DATA_RATE_OPTIMIZE
+        } else {
+            0
+        };
         ldro | modem3::AGC_AUTO_ON
     }
 
     /// Low 3 bits of `RegDetectOptimize` (0x05 for SF6, 0x03 otherwise).
     pub const fn detect_optimize(&self) -> u8 {
-        if matches!(self.spreading_factor, SpreadingFactor::Sf6) { 0x05 } else { 0x03 }
+        if matches!(self.spreading_factor, SpreadingFactor::Sf6) {
+            0x05
+        } else {
+            0x03
+        }
     }
 
     /// `RegDetectionThreshold` (0x0C for SF6, 0x0A otherwise).
     pub const fn detection_threshold(&self) -> u8 {
-        if matches!(self.spreading_factor, SpreadingFactor::Sf6) { 0x0C } else { 0x0A }
+        if matches!(self.spreading_factor, SpreadingFactor::Sf6) {
+            0x0C
+        } else {
+            0x0A
+        }
     }
 
     /// `RegPreambleMsb`, `RegPreambleLsb`.
@@ -378,8 +390,16 @@ pub const fn encode_pa(output: PaOutput, dbm: i8) -> Result<PaSettings, ConfigEr
             if dbm < -4 || dbm > 15 {
                 return Err(ConfigError::PowerOutOfRange);
             }
-            let pa_config = if dbm >= 0 { 0x70 | dbm as u8 } else { (dbm + 4) as u8 };
-            Ok(PaSettings { pa_config, pa_dac: pa::PA_DAC_DEFAULT, ocp_ma: 100 })
+            let pa_config = if dbm >= 0 {
+                0x70 | dbm as u8
+            } else {
+                (dbm + 4) as u8
+            };
+            Ok(PaSettings {
+                pa_config,
+                pa_dac: pa::PA_DAC_DEFAULT,
+                ocp_ma: 100,
+            })
         }
     }
 }

@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Pi side: camera/test source -> ffmpeg H.264 -> MoQ-style objects -> SX1276 FSK"
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
 publish = false
 
 [dependencies]

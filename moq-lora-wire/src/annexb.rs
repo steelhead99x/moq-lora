@@ -35,7 +35,11 @@ pub struct AuSplitter {
 impl AuSplitter {
     pub fn push(&mut self, data: &[u8]) -> Vec<Vec<u8>> {
         self.buf.extend_from_slice(data);
-        let cuts: Vec<usize> = nals(&self.buf).into_iter().filter(|&(p, t)| t == 9 && p > 0).map(|(p, _)| p).collect();
+        let cuts: Vec<usize> = nals(&self.buf)
+            .into_iter()
+            .filter(|&(p, t)| t == 9 && p > 0)
+            .map(|(p, _)| p)
+            .collect();
         let mut out = Vec::new();
         let mut last = 0;
         for c in cuts {
@@ -45,6 +49,11 @@ impl AuSplitter {
             }
         }
         self.buf.drain(..last);
+        // A tail with no AUD that is already too big to send will never become a
+        // legal object. Drop it instead of letting a stuck encoder grow the buffer.
+        if self.buf.len() > crate::MAX_OBJECT {
+            self.buf.clear();
+        }
         out
     }
 
@@ -79,5 +88,20 @@ mod tests {
         assert_eq!(got, vec![a1.clone(), a2]);
         assert!(is_key(&a1));
         assert!(s.flush().is_none()); // AUD only
+    }
+
+    #[test]
+    fn splitter_drops_unbounded_tail() {
+        let mut s = AuSplitter::default();
+        let junk = vec![0u8; crate::MAX_OBJECT + 8];
+        assert!(s.push(&junk).is_empty());
+        assert!(s.flush().is_none());
+        // resyncs at the next real access unit
+        let aud = [0, 0, 0, 1, 9, 0xf0];
+        let p = [0, 0, 1, 0x41, 8, 8];
+        let au: Vec<u8> = [&aud[..], &p].concat();
+        let mut got = s.push(&au);
+        got.extend(s.flush());
+        assert_eq!(got, vec![au]);
     }
 }

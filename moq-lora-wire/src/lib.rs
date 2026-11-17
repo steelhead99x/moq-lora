@@ -14,7 +14,7 @@
 //!  4     obj     u8   object id within the group (0 = keyframe)
 //!  5     idx     u8   data fragment index, or parity block index if PARITY
 //!  6     nfrag   u8   number of data fragments in the object
-//!  7     flags   u8   bit0 PARITY, bits1..3 version (2), bits4..7 k (FEC block, 0 = none)
+//!  7     flags   u8   bit0 PARITY, bits1..3 version (3), bits4..7 k (FEC block, 0 = none)
 //!  8..10 objlen  u16  object length in bytes
 //! 10..12 crc     u16  CRC-16/CCITT-FALSE over the whole frame with this field zeroed
 //! 12..   payload     <= 243 bytes; an object is cut into `nfrag = ceil(len/243)` equal-size
@@ -23,8 +23,93 @@
 //! Object payload: 17-byte [`ObjHdr`] followed by the H.264 Annex-B access unit.
 
 pub mod annexb;
-pub mod stamp;
 pub mod seal;
+pub mod stamp;
+
+/// Longest CatWAN / replay line we will buffer. A 255-byte radio frame is about
+/// 550 bytes once it is hex-encoded on a `R` line; anything longer is not a frame
+/// this link can carry.
+pub const MAX_SERIAL_LINE: usize = 1024;
+
+/// One line from [`read_line_limited`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Line {
+    /// Bytes up to and including the newline, when there was one.
+    Data(Vec<u8>),
+    /// The line exceeded `cap` and was discarded through its newline.
+    TooLong,
+}
+
+/// Read one line without buffering more than `cap` bytes.
+///
+/// `Ok(None)` is EOF. Unlike [`std::io::BufRead::read_line`], a peer that never
+/// sends a newline cannot grow memory without bound: the oversize input is
+/// dropped and reported as [`Line::TooLong`].
+pub fn read_line_limited(
+    r: &mut impl std::io::BufRead,
+    cap: usize,
+) -> std::io::Result<Option<Line>> {
+    let mut buf = Vec::new();
+    let mut skipping = false;
+    loop {
+        let available = r.fill_buf()?;
+        if available.is_empty() {
+            if skipping || buf.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(Line::Data(buf)));
+        }
+        if let Some(i) = available.iter().position(|&b| b == b'\n') {
+            let take = i + 1;
+            if skipping || buf.len().saturating_add(take) > cap {
+                r.consume(take);
+                return Ok(Some(Line::TooLong));
+            }
+            buf.extend_from_slice(&available[..take]);
+            r.consume(take);
+            return Ok(Some(Line::Data(buf)));
+        }
+        if skipping || buf.len().saturating_add(available.len()) > cap {
+            skipping = true;
+            let n = available.len();
+            r.consume(n);
+            buf.clear();
+            continue;
+        }
+        buf.extend_from_slice(available);
+        let n = available.len();
+        r.consume(n);
+    }
+}
+
+/// `BITRATE:FDEV:PREAMBLE[:x]`. `x` is the only accepted suffix (datasheet limits off).
+/// Bitrate must be non-zero so airtime math cannot divide by zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FskProfile {
+    pub bitrate: u32,
+    pub fdev: u32,
+    pub preamble: u16,
+    pub unchecked: bool,
+}
+
+pub fn parse_fsk_profile(s: &str) -> Result<FskProfile, &'static str> {
+    let p: Vec<&str> = s.split(':').collect();
+    if p.len() < 3 || p.len() > 4 || (p.len() == 4 && p[3] != "x") {
+        return Err("profile must be BITRATE:FDEV:PREAMBLE[:x]");
+    }
+    let bitrate: u32 = p[0].parse().map_err(|_| "bad bitrate")?;
+    let fdev: u32 = p[1].parse().map_err(|_| "bad fdev")?;
+    let preamble: u16 = p[2].parse().map_err(|_| "bad preamble")?;
+    if bitrate == 0 {
+        return Err("bitrate must be non-zero");
+    }
+    Ok(FskProfile {
+        bitrate,
+        fdev,
+        preamble,
+        unchecked: p.len() == 4,
+    })
+}
 
 pub const MAX_FRAME: usize = 255;
 pub const HDR_LEN: usize = 12;
@@ -50,7 +135,11 @@ pub fn crc16(data: &[u8]) -> u16 {
     for &b in data {
         c ^= (b as u16) << 8;
         for _ in 0..8 {
-            c = if c & 0x8000 != 0 { (c << 1) ^ 0x1021 } else { c << 1 };
+            c = if c & 0x8000 != 0 {
+                (c << 1) ^ 0x1021
+            } else {
+                c << 1
+            };
         }
     }
     c
@@ -71,14 +160,23 @@ impl FrameHdr {
     pub fn encode(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.seq.to_be_bytes());
         out.extend_from_slice(&self.group.to_be_bytes());
-        out.extend_from_slice(&[self.obj, self.idx, self.nfrag, (self.parity as u8) | (VERSION << 1) | (self.k << 4)]);
+        out.extend_from_slice(&[
+            self.obj,
+            self.idx,
+            self.nfrag,
+            (self.parity as u8) | (VERSION << 1) | (self.k << 4),
+        ]);
         out.extend_from_slice(&self.objlen.to_be_bytes());
         out.extend_from_slice(&[0, 0]);
     }
 
     /// Parse and sanity-check a radio frame. `None` for anything that is not ours.
+    ///
+    /// Frames longer than [`MAX_FRAME`] are rejected before the CRC copy. The SX1276
+    /// cannot deliver a longer payload; accepting one would let a hostile replay or
+    /// serial peer force an unbounded allocation.
     pub fn decode(b: &[u8]) -> Option<(FrameHdr, &[u8])> {
-        if b.len() < HDR_LEN + 1 || (b[7] >> 1) & 7 != VERSION {
+        if b.len() < HDR_LEN + 1 || b.len() > MAX_FRAME || (b[7] >> 1) & 7 != VERSION {
             return None;
         }
         let mut z = b.to_vec();
@@ -114,11 +212,19 @@ impl FrameHdr {
     /// than the others: a very short frame right behind a long one is the frame most likely
     /// to be missed by a receiver that is still busy with the long one.
     pub fn chunk_size(&self) -> usize {
+        if self.nfrag == 0 {
+            return 0;
+        }
         (self.objlen as usize).div_ceil(self.nfrag as usize)
     }
     pub fn chunk_len(&self, idx: usize) -> usize {
         let cs = self.chunk_size();
-        (self.objlen as usize - idx * cs).min(cs)
+        if cs == 0 || idx >= self.nfrag as usize {
+            return 0;
+        }
+        (self.objlen as usize)
+            .saturating_sub(idx.saturating_mul(cs))
+            .min(cs)
     }
 }
 
@@ -181,10 +287,19 @@ impl Fragmenter {
         if k > 15 {
             return Err(WireError::BadK);
         }
-        Ok(Fragmenter { seq: 0, k, min_frame: 0 })
+        Ok(Fragmenter {
+            seq: 0,
+            k,
+            min_frame: 0,
+        })
     }
 
-    pub fn fragment(&mut self, group: u16, obj: u8, data: &[u8]) -> Result<Vec<Vec<u8>>, WireError> {
+    pub fn fragment(
+        &mut self,
+        group: u16,
+        obj: u8,
+        data: &[u8],
+    ) -> Result<Vec<Vec<u8>>, WireError> {
         if data.is_empty() {
             return Err(WireError::Empty);
         }
@@ -194,7 +309,11 @@ impl Fragmenter {
         let cs = data.len().div_ceil(data.len().div_ceil(MAX_CHUNK));
         let chunks: Vec<&[u8]> = data.chunks(cs).collect();
         let nfrag = chunks.len() as u8;
-        let blk = if self.k == 0 { chunks.len() } else { self.k as usize };
+        let blk = if self.k == 0 {
+            chunks.len()
+        } else {
+            self.k as usize
+        };
         let mut out = Vec::with_capacity(chunks.len() + chunks.len().div_ceil(blk));
         for (b, block) in chunks.chunks(blk).enumerate() {
             for (j, c) in block.iter().enumerate() {
@@ -214,9 +333,28 @@ impl Fragmenter {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn frame(&mut self, group: u16, obj: u8, idx: u8, nfrag: u8, parity: bool, objlen: usize, pl: &[u8]) -> Vec<u8> {
+    fn frame(
+        &mut self,
+        group: u16,
+        obj: u8,
+        idx: u8,
+        nfrag: u8,
+        parity: bool,
+        objlen: usize,
+        pl: &[u8],
+    ) -> Vec<u8> {
         let mut f = Vec::with_capacity(HDR_LEN + pl.len());
-        FrameHdr { seq: self.seq, group, obj, idx, nfrag, parity, k: self.k, objlen: objlen as u16 }.encode(&mut f);
+        FrameHdr {
+            seq: self.seq,
+            group,
+            obj,
+            idx,
+            nfrag,
+            parity,
+            k: self.k,
+            objlen: objlen as u16,
+        }
+        .encode(&mut f);
         self.seq = self.seq.wrapping_add(1);
         f.extend_from_slice(pl);
         if f.len() < self.min_frame.min(MAX_FRAME) {
@@ -230,9 +368,19 @@ impl Fragmenter {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Event {
     /// Complete object (`recovered` = data fragments rebuilt from parity).
-    Object { group: u16, obj: u8, data: Vec<u8>, recovered: u32 },
+    Object {
+        group: u16,
+        obj: u8,
+        data: Vec<u8>,
+        recovered: u32,
+    },
     /// Object abandoned: `have` of `need` data fragments.
-    Lost { group: u16, obj: u8, have: u32, need: u32 },
+    Lost {
+        group: u16,
+        obj: u8,
+        have: u32,
+        need: u32,
+    },
 }
 
 struct Partial {
@@ -244,15 +392,27 @@ struct Partial {
 
 impl Partial {
     fn new(h: FrameHdr) -> Self {
-        let nb = if h.k == 0 { 0 } else { (h.nfrag as usize).div_ceil(h.k as usize) };
-        Partial { h, chunks: vec![None; h.nfrag as usize], parity: vec![None; nb], recovered: 0 }
+        let nb = if h.k == 0 {
+            0
+        } else {
+            (h.nfrag as usize).div_ceil(h.k as usize)
+        };
+        Partial {
+            h,
+            chunks: vec![None; h.nfrag as usize],
+            parity: vec![None; nb],
+            recovered: 0,
+        }
     }
     fn try_recover(&mut self) {
         let k = self.h.k as usize;
         for b in 0..self.parity.len() {
             let Some(p) = &self.parity[b] else { continue };
             let range = b * k..((b + 1) * k).min(self.chunks.len());
-            let missing: Vec<usize> = range.clone().filter(|&i| self.chunks[i].is_none()).collect();
+            let missing: Vec<usize> = range
+                .clone()
+                .filter(|&i| self.chunks[i].is_none())
+                .collect();
             if missing.len() != 1 {
                 continue;
             }
@@ -262,10 +422,18 @@ impl Partial {
                 continue;
             }
             let mut r = p.clone();
+            let mut intact = true;
             for i in range.filter(|&i| i != m) {
-                for (x, y) in r.iter_mut().zip(self.chunks[i].as_ref().unwrap()) {
+                let Some(chunk) = self.chunks[i].as_ref() else {
+                    intact = false;
+                    break;
+                };
+                for (x, y) in r.iter_mut().zip(chunk.iter()) {
                     *x ^= y;
                 }
+            }
+            if !intact {
+                continue;
             }
             r.truncate(want);
             self.chunks[m] = Some(r);
@@ -281,9 +449,19 @@ impl Partial {
     fn into_event(mut self) -> Event {
         self.try_recover();
         if self.complete() {
-            Event::Object { group: self.h.group, obj: self.h.obj, recovered: self.recovered, data: self.chunks.into_iter().flatten().flatten().collect() }
+            Event::Object {
+                group: self.h.group,
+                obj: self.h.obj,
+                recovered: self.recovered,
+                data: self.chunks.into_iter().flatten().flatten().collect(),
+            }
         } else {
-            Event::Lost { group: self.h.group, obj: self.h.obj, have: self.have(), need: self.h.nfrag as u32 }
+            Event::Lost {
+                group: self.h.group,
+                obj: self.h.obj,
+                have: self.have(),
+                need: self.h.nfrag as u32,
+            }
         }
     }
 }
@@ -329,7 +507,11 @@ impl Reassembler {
         if self.done == Some(key) {
             return ev; // trailing parity of an object already delivered
         }
-        if self.cur.as_ref().is_some_and(|p| (p.h.group, p.h.obj) != key) {
+        if self
+            .cur
+            .as_ref()
+            .is_some_and(|p| (p.h.group, p.h.obj) != key)
+        {
             ev.push(self.cur.take().unwrap().into_event());
         }
         let p = self.cur.get_or_insert_with(|| Partial::new(h));
@@ -338,15 +520,23 @@ impl Reassembler {
             return ev;
         }
         if h.parity {
+            let Some(slot) = p.parity.get_mut(h.idx as usize) else {
+                self.frames_bad += 1;
+                return ev;
+            };
             let n = pl.len().min(h.chunk_size());
-            p.parity[h.idx as usize].get_or_insert_with(|| pl[..n].to_vec());
+            slot.get_or_insert_with(|| pl[..n].to_vec());
         } else {
             let n = h.chunk_len(h.idx as usize);
             if pl.len() < n {
                 self.frames_bad += 1;
                 return ev;
             }
-            p.chunks[h.idx as usize].get_or_insert_with(|| pl[..n].to_vec());
+            let Some(slot) = p.chunks.get_mut(h.idx as usize) else {
+                self.frames_bad += 1;
+                return ev;
+            };
+            slot.get_or_insert_with(|| pl[..n].to_vec());
         }
         p.try_recover();
         if p.complete() {
@@ -411,7 +601,9 @@ mod tests {
     use super::*;
 
     fn obj(n: usize, seed: u8) -> Vec<u8> {
-        (0..n).map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed)).collect()
+        (0..n)
+            .map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed))
+            .collect()
     }
 
     #[test]
@@ -425,7 +617,15 @@ mod tests {
                 assert!(fr.len() <= MAX_FRAME);
                 got.extend(r.push(&fr));
             }
-            assert_eq!(got.pop(), Some(Event::Object { group: 3, obj: o as u8, data: d, recovered: 0 }));
+            assert_eq!(
+                got.pop(),
+                Some(Event::Object {
+                    group: 3,
+                    obj: o as u8,
+                    data: d,
+                    recovered: 0
+                })
+            );
         }
         assert_eq!(r.frames_missing, 0);
     }
@@ -443,14 +643,16 @@ mod tests {
                 let mut ev = vec![];
                 for fr in &frames {
                     let (h, _) = FrameHdr::decode(fr).unwrap();
-                    if !h.parity && h.idx as usize % k as usize == 0 {
+                    if !h.parity && (h.idx as usize).is_multiple_of(k as usize) {
                         continue;
                     }
                     ev.extend(r.push(fr));
                 }
                 ev.extend(r.flush());
                 match &ev[0] {
-                    Event::Object { data, recovered, .. } => {
+                    Event::Object {
+                        data, recovered, ..
+                    } => {
                         assert_eq!(data, &d, "k={k} n={n}");
                         assert_eq!(*recovered as usize, nfrag.div_ceil(k as usize));
                     }
@@ -473,7 +675,15 @@ mod tests {
             }
             ev.extend(r.push(&fr));
         }
-        assert_eq!(ev, vec![Event::Object { group: 0, obj: 0, data: d, recovered: 1 }]);
+        assert_eq!(
+            ev,
+            vec![Event::Object {
+                group: 0,
+                obj: 0,
+                data: d,
+                recovered: 1
+            }]
+        );
     }
 
     #[test]
@@ -491,7 +701,15 @@ mod tests {
         for fr in &b {
             ev.extend(r.push(fr));
         }
-        assert_eq!(ev[0], Event::Lost { group: 1, obj: 0, have: 4, need: 5 });
+        assert_eq!(
+            ev[0],
+            Event::Lost {
+                group: 1,
+                obj: 0,
+                have: 4,
+                need: 5
+            }
+        );
         assert!(matches!(ev[1], Event::Object { obj: 1, .. }));
         assert_eq!(r.frames_missing, 1);
     }
@@ -505,8 +723,16 @@ mod tests {
             let d = obj(*n, 7);
             let frames = f.fragment(1, o as u8, &d).unwrap();
             let lens: Vec<usize> = frames.iter().map(|x| x.len()).collect();
-            assert!(lens.iter().all(|&l| l >= 96 && l <= MAX_FRAME), "{lens:?}");
-            assert!(lens.iter().max().unwrap() - lens.iter().filter(|&&l| l > 96).min().unwrap_or(&96) <= 1 || *n < 96, "{lens:?}");
+            assert!(
+                lens.iter().all(|l| (96..=MAX_FRAME).contains(l)),
+                "{lens:?}"
+            );
+            assert!(
+                lens.iter().max().unwrap() - lens.iter().filter(|&&l| l > 96).min().unwrap_or(&96)
+                    <= 1
+                    || *n < 96,
+                "{lens:?}"
+            );
             let mut ev = vec![];
             for (i, fr) in frames.iter().enumerate() {
                 if i != 0 {
@@ -514,7 +740,16 @@ mod tests {
                 }
             }
             ev.extend(r.flush());
-            assert_eq!(ev.last(), Some(&Event::Object { group: 1, obj: o as u8, data: d, recovered: 1 }), "n={n}");
+            assert_eq!(
+                ev.last(),
+                Some(&Event::Object {
+                    group: 1,
+                    obj: o as u8,
+                    data: d,
+                    recovered: 1
+                }),
+                "n={n}"
+            );
         }
     }
 
@@ -546,9 +781,135 @@ mod tests {
 
     #[test]
     fn obj_hdr_roundtrip() {
-        let h = ObjHdr { frame_no: 77, cap_us: 1_794_900_000_123_456, enc_us: 33_000, key: true };
+        let h = ObjHdr {
+            frame_no: 77,
+            cap_us: 1_794_900_000_123_456,
+            enc_us: 33_000,
+            key: true,
+        };
         let mut b = h.encode().to_vec();
         b.extend_from_slice(b"xyz");
         assert_eq!(ObjHdr::decode(&b), Some((h, &b"xyz"[..])));
+    }
+
+    #[test]
+    fn decode_rejects_oversize_and_truncated() {
+        assert!(FrameHdr::decode(&[]).is_none());
+        assert!(FrameHdr::decode(&[0u8; HDR_LEN]).is_none());
+        assert!(FrameHdr::decode(&vec![0u8; MAX_FRAME + 1]).is_none());
+        assert!(FrameHdr::decode(&vec![0x11u8; 64 * 1024]).is_none());
+        let mut f = Fragmenter::new(0).unwrap();
+        let fr = f.fragment(1, 0, &obj(40, 1)).unwrap().pop().unwrap();
+        assert!(fr.len() <= MAX_FRAME);
+        assert!(FrameHdr::decode(&fr).is_some());
+        assert!(FrameHdr::decode(&fr[..HDR_LEN]).is_none());
+    }
+
+    #[test]
+    fn chunk_lengths_sum_to_objlen() {
+        for objlen in 1usize..=MAX_OBJECT {
+            let nfrag = objlen.div_ceil(MAX_CHUNK);
+            let h = FrameHdr {
+                seq: 0,
+                group: 0,
+                obj: 0,
+                idx: 0,
+                nfrag: nfrag as u8,
+                parity: false,
+                k: 0,
+                objlen: objlen as u16,
+            };
+            assert!(h.chunk_size() <= MAX_CHUNK, "objlen {objlen}");
+            let sum: usize = (0..nfrag).map(|i| h.chunk_len(i)).sum();
+            assert_eq!(sum, objlen, "objlen {objlen}");
+            assert_eq!(h.chunk_len(nfrag), 0);
+        }
+        let zero = FrameHdr {
+            seq: 0,
+            group: 0,
+            obj: 0,
+            idx: 0,
+            nfrag: 0,
+            parity: false,
+            k: 0,
+            objlen: 10,
+        };
+        assert_eq!(zero.chunk_size(), 0);
+        assert_eq!(zero.chunk_len(0), 0);
+    }
+
+    #[test]
+    fn hostile_frames_do_not_panic() {
+        let mut rng = 0x1234_5678_u64;
+        let mut next = || {
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (rng >> 33) as u8
+        };
+        let mut r = Reassembler::new();
+        for _ in 0..500 {
+            let n = (next() as usize) * 4; // 0..=1020, includes oversize
+            let frame: Vec<u8> = (0..n).map(|_| next()).collect();
+            let _ = r.push(&frame);
+        }
+        let _ = r.flush();
+        // A well-formed object with one flipped header field must not panic either.
+        let mut f = Fragmenter::new(8).unwrap();
+        f.min_frame = 96;
+        let frames = f.fragment(2, 1, &obj(900, 9)).unwrap();
+        for fr in &frames {
+            let mut bad = fr.clone();
+            bad[4] ^= 0x7f;
+            bad[6] ^= 0xff;
+            let _ = r.push(&bad);
+            let mut long = fr.clone();
+            long.extend_from_slice(&[0u8; 300]);
+            let _ = r.push(&long);
+        }
+        let _ = r.flush();
+    }
+
+    #[test]
+    fn profile_parser() {
+        assert_eq!(
+            parse_fsk_profile("300000:100000:6").unwrap(),
+            FskProfile {
+                bitrate: 300_000,
+                fdev: 100_000,
+                preamble: 6,
+                unchecked: false
+            }
+        );
+        assert!(parse_fsk_profile("350000:100000:14:x").unwrap().unchecked);
+        assert!(parse_fsk_profile("0:100000:6").is_err());
+        assert!(parse_fsk_profile("300000:100000:6:y").is_err());
+        assert!(parse_fsk_profile("300000:100000").is_err());
+        assert!(parse_fsk_profile("300000:100000:65536").is_err());
+    }
+
+    #[test]
+    fn read_line_limited_caps_and_keeps_short_lines() {
+        let mut input = std::io::Cursor::new(b"ok\n".to_vec());
+        assert_eq!(
+            read_line_limited(&mut input, 8).unwrap(),
+            Some(Line::Data(b"ok\n".to_vec()))
+        );
+        assert_eq!(read_line_limited(&mut input, 8).unwrap(), None);
+
+        let mut big = vec![b'A'; 50];
+        big.push(b'\n');
+        big.extend_from_slice(b"next\n");
+        let mut input = std::io::Cursor::new(big);
+        assert_eq!(
+            read_line_limited(&mut input, 16).unwrap(),
+            Some(Line::TooLong)
+        );
+        assert_eq!(
+            read_line_limited(&mut input, 16).unwrap(),
+            Some(Line::Data(b"next\n".to_vec()))
+        );
+
+        // No newline, and longer than the cap: do not return the bytes.
+        let mut input = std::io::Cursor::new(vec![b'B'; 100]);
+        assert_eq!(read_line_limited(&mut input, 16).unwrap(), None);
     }
 }

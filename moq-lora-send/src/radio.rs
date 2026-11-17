@@ -28,7 +28,11 @@ impl IrqLine for CdevIrq {
                 return Ok(false);
             }
             let ms = left.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32;
-            let mut pfd = libc::pollfd { fd: self.ev.as_raw_fd(), events: libc::POLLIN | libc::POLLPRI, revents: 0 };
+            let mut pfd = libc::pollfd {
+                fd: self.ev.as_raw_fd(),
+                events: libc::POLLIN | libc::POLLPRI,
+                revents: 0,
+            };
             // SAFETY: one valid pollfd for the duration of the call.
             let n = unsafe { libc::poll(&mut pfd, 1, ms) };
             if n < 0 {
@@ -60,14 +64,31 @@ impl Radio {
         let mut bus = SpidevBus::open("/dev/spidev0.0").context("open spidev")?;
         let mut o = SpidevOptions::new();
         o.bits_per_word(8).max_speed_hz(spi_hz);
-        if bus.configure(&o.clone().mode(SpiModeFlags::SPI_MODE_0 | SpiModeFlags::SPI_NO_CS).build()).is_err() {
-            bus.configure(&o.mode(SpiModeFlags::SPI_MODE_0).build()).context("configure spidev")?;
+        if bus
+            .configure(
+                &o.clone()
+                    .mode(SpiModeFlags::SPI_MODE_0 | SpiModeFlags::SPI_NO_CS)
+                    .build(),
+            )
+            .is_err()
+        {
+            bus.configure(&o.mode(SpiModeFlags::SPI_MODE_0).build())
+                .context("configure spidev")?;
         }
         let mut chip = Chip::new("/dev/gpiochip0")?;
-        let nss = chip.get_line(25)?.request(LineRequestFlags::OUTPUT, 1, "moq-lora")?;
-        let rst = chip.get_line(17)?.request(LineRequestFlags::OUTPUT, 1, "moq-lora")?;
-        let ev = chip.get_line(4)?.events(LineRequestFlags::INPUT, EventRequestFlags::RISING_EDGE, "moq-lora")?;
-        let spi = ExclusiveDevice::new(bus, CdevPin::new(nss)?, Delay).map_err(|x| anyhow::anyhow!("NSS: {x}"))?;
+        let nss = chip
+            .get_line(25)?
+            .request(LineRequestFlags::OUTPUT, 1, "moq-lora")?;
+        let rst = chip
+            .get_line(17)?
+            .request(LineRequestFlags::OUTPUT, 1, "moq-lora")?;
+        let ev = chip.get_line(4)?.events(
+            LineRequestFlags::INPUT,
+            EventRequestFlags::RISING_EDGE,
+            "moq-lora",
+        )?;
+        let spi = ExclusiveDevice::new(bus, CdevPin::new(nss)?, Delay)
+            .map_err(|x| anyhow::anyhow!("NSS: {x}"))?;
         let mut r = Sx1276::new(spi, CdevPin::new(rst)?, CdevIrq { ev }, Delay);
         r.init(freq_hz, &sx1276::LoRaConfig::default()).map_err(e)?;
         r.enter_fsk_mode().map_err(e)?;
@@ -79,7 +100,10 @@ impl Radio {
         if r.frequency().map_err(e)?.abs_diff(freq_hz) > 1000 {
             bail!("frequency readback mismatch");
         }
-        Ok(Radio { r, toa_us: cfg.time_on_air_us(255) })
+        Ok(Radio {
+            r,
+            toa_us: cfg.time_on_air_us(255),
+        })
     }
 
     /// Transmit one frame and wait for PacketSent.

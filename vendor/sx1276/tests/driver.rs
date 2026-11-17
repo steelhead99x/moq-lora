@@ -6,7 +6,11 @@ use sx1276::*;
 
 /// One SpiDevice transaction made of a single full-duplex transfer.
 fn xfer(out: &[u8], inp: &[u8]) -> Vec<T<u8>> {
-    vec![T::transaction_start(), T::transfer_in_place(out.to_vec(), inp.to_vec()), T::transaction_end()]
+    vec![
+        T::transaction_start(),
+        T::transfer_in_place(out.to_vec(), inp.to_vec()),
+        T::transaction_end(),
+    ]
 }
 fn wr(addr: u8, val: u8) -> Vec<T<u8>> {
     xfer(&[addr | 0x80, val], &[0, 0])
@@ -18,7 +22,12 @@ fn rd(addr: u8, val: u8) -> Vec<T<u8>> {
 type Radio = Sx1276<Spi<u8>, Pin, PolledIrq<Pin, NoopDelay>, NoopDelay>;
 
 fn radio(spi: Vec<T<u8>>, rst: &[PinT], dio0: &[PinT]) -> Radio {
-    Sx1276::new(Spi::new(&spi), Pin::new(rst), PolledIrq::new(Pin::new(dio0), NoopDelay, 100), NoopDelay)
+    Sx1276::new(
+        Spi::new(&spi),
+        Pin::new(rst),
+        PolledIrq::new(Pin::new(dio0), NoopDelay, 100),
+        NoopDelay,
+    )
 }
 
 fn done(r: Radio) {
@@ -31,7 +40,11 @@ fn done(r: Radio) {
 
 #[test]
 fn reset_and_version() {
-    let mut r = radio(rd(0x42, 0x12), &[PinT::set(State::Low), PinT::set(State::High)], &[]);
+    let mut r = radio(
+        rd(0x42, 0x12),
+        &[PinT::set(State::Low), PinT::set(State::High)],
+        &[],
+    );
     r.reset().unwrap();
     assert_eq!(r.version().unwrap(), 0x12);
     done(r);
@@ -50,7 +63,10 @@ fn lora_mode_and_frequency_burst() {
     r.enter_lora_mode().unwrap();
     r.set_frequency(915_000_000).unwrap();
     assert_eq!(r.frequency().unwrap(), 915_000_000);
-    assert_eq!(r.set_frequency(100_000_000), Err(Error::Config(ConfigError::FrequencyOutOfRange)));
+    assert_eq!(
+        r.set_frequency(100_000_000),
+        Err(Error::Config(ConfigError::FrequencyOutOfRange))
+    );
     done(r);
 }
 
@@ -58,7 +74,10 @@ fn lora_mode_and_frequency_burst() {
 fn configure_is_one_burst_plus_extras() {
     let c = LoRaConfig::default();
     let mut s = vec![];
-    s.extend(xfer(&[0x9D, 0x72, 0x74, 0x64, 0x00, 0x08, 0xFF, 0xFF, 0x00], &[0; 9]));
+    s.extend(xfer(
+        &[0x9D, 0x72, 0x74, 0x64, 0x00, 0x08, 0xFF, 0xFF, 0x00],
+        &[0; 9],
+    ));
     s.extend(wr(0x26, 0x04));
     s.extend(rd(0x31, 0xC3));
     s.extend(wr(0x31, 0xC3));

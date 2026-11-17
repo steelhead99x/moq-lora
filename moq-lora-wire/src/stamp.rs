@@ -19,6 +19,12 @@ fn bits(val: u32) -> [bool; 40] {
 /// Draw `val` into the luma plane (`y` = w*h bytes) and neutralize chroma if given.
 pub fn write_barcode(frame: &mut [u8], w: usize, h: usize, val: u32) {
     let bw = w / 20;
+    let Some(plane) = w.checked_mul(h) else {
+        return;
+    };
+    if bw == 0 || h < BAR_ROWS || frame.len() < plane {
+        return;
+    }
     for (i, &bit) in bits(val).iter().enumerate() {
         let (row, col) = (i / 20, i % 20);
         let v = if bit { 235 } else { 16 };
@@ -40,6 +46,13 @@ pub fn write_barcode(frame: &mut [u8], w: usize, h: usize, val: u32) {
 /// Read the barcode back from a decoded luma plane.
 pub fn read_barcode(y: &[u8], w: usize, h: usize) -> Option<u32> {
     let bw = w / 20;
+    // Need a sample window inside each block. Width below 40 makes a block too
+    // narrow (or zero) and used to divide by zero; height below the bar is a
+    // usize underflow. Neither is a 320x240 frame.
+    let plane = w.checked_mul(h)?;
+    if bw < 2 || h < BAR_ROWS || y.len() < plane {
+        return None;
+    }
     let mut v: u64 = 0;
     for i in 0..40 {
         let (row, col) = (i / 20, i % 20);
@@ -66,11 +79,26 @@ fn bits_of(v: u64) -> [bool; 40] {
 }
 
 const FONT: &[(char, [u8; 5])] = &[
-    ('0', [7, 5, 5, 5, 7]), ('1', [2, 6, 2, 2, 7]), ('2', [7, 1, 7, 4, 7]), ('3', [7, 1, 7, 1, 7]),
-    ('4', [5, 5, 7, 1, 1]), ('5', [7, 4, 7, 1, 7]), ('6', [7, 4, 7, 5, 7]), ('7', [7, 1, 1, 1, 1]),
-    ('8', [7, 5, 7, 5, 7]), ('9', [7, 5, 7, 1, 7]), (':', [0, 2, 0, 2, 0]), ('.', [0, 0, 0, 0, 2]),
-    ('-', [0, 0, 7, 0, 0]), ('#', [5, 7, 5, 7, 5]), ('P', [7, 5, 7, 4, 4]), ('S', [7, 4, 7, 1, 7]),
-    ('T', [7, 2, 2, 2, 2]), ('k', [4, 5, 6, 5, 5]), ('F', [7, 4, 6, 4, 4]), ('K', [5, 5, 6, 5, 5]),
+    ('0', [7, 5, 5, 5, 7]),
+    ('1', [2, 6, 2, 2, 7]),
+    ('2', [7, 1, 7, 4, 7]),
+    ('3', [7, 1, 7, 1, 7]),
+    ('4', [5, 5, 7, 1, 1]),
+    ('5', [7, 4, 7, 1, 7]),
+    ('6', [7, 4, 7, 5, 7]),
+    ('7', [7, 1, 1, 1, 1]),
+    ('8', [7, 5, 7, 5, 7]),
+    ('9', [7, 5, 7, 1, 7]),
+    (':', [0, 2, 0, 2, 0]),
+    ('.', [0, 0, 0, 0, 2]),
+    ('-', [0, 0, 7, 0, 0]),
+    ('#', [5, 7, 5, 7, 5]),
+    ('P', [7, 5, 7, 4, 4]),
+    ('S', [7, 4, 7, 1, 7]),
+    ('T', [7, 2, 2, 2, 2]),
+    ('k', [4, 5, 6, 5, 5]),
+    ('F', [7, 4, 6, 4, 4]),
+    ('K', [5, 5, 6, 5, 5]),
     (' ', [0, 0, 0, 0, 0]),
 ];
 
@@ -84,7 +112,11 @@ pub fn draw_text(y: &mut [u8], w: usize, x0: usize, y0: usize, text: &str, s: us
         }
     }
     for (ci, c) in text.chars().enumerate() {
-        let g = FONT.iter().find(|f| f.0 == c).map(|f| f.1).unwrap_or([0; 5]);
+        let g = FONT
+            .iter()
+            .find(|f| f.0 == c)
+            .map(|f| f.1)
+            .unwrap_or([0; 5]);
         for (r, row) in g.iter().enumerate() {
             for col in 0..3 {
                 if row >> (2 - col) & 1 == 1 {
@@ -115,7 +147,7 @@ mod tests {
             assert_eq!(read_barcode(&f, w, h), Some(v));
         }
         f[(h - 4) * w + 10] ^= 0; // unchanged
-        // corrupt one block -> check fails
+                                  // corrupt one block -> check fails
         write_barcode(&mut f, w, h, 42);
         for yy in h - 8..h {
             for xx in 0..16 {
@@ -123,5 +155,10 @@ mod tests {
             }
         }
         assert_eq!(read_barcode(&f, w, h), None);
+        assert_eq!(read_barcode(&f, 0, 64), None);
+        assert_eq!(read_barcode(&f, 16, 240), None);
+        assert_eq!(read_barcode(&f, 320, 8), None);
+        write_barcode(&mut f, 0, 64, 1);
+        write_barcode(&mut [], 320, 240, 1);
     }
 }

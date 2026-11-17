@@ -10,28 +10,37 @@ ChaCha20-Poly1305. Antennas ~1 m apart, indoors.
 
 ## Exact commands
 
-Key (once): `( umask 077; openssl rand -hex 32 > ~/sx1276-link/moq-lora-key.hex )`, copied to the Pi as
-`~/moq-lora-key.hex`.
+Machine-specific paths from the bench machine are written here as variables. Set them to
+your own ssh host, serial device, and key file (mode 0600, never commit it):
+
+```sh
+export PI=pi                     # ssh host of the Pi
+export PORT=/dev/cu.usbmodemXXX  # macOS CatWAN port; Linux is typically /dev/ttyACM0
+export LKEY="$HOME/moq-lora-key.hex"
+export PKEY="$LKEY"              # path of that same file on the Pi
+( umask 077; openssl rand -hex 32 > "$LKEY" )
+scp "$LKEY" "$PI:moq-lora-key.hex"
+```
 
 Pi -> Mac (`scripts/run2.sh NAME PROFILE 330 ...`), e.g. f300_on:
 
 ```sh
-# Mac: clock offset, then receiver
-moq-lora-recv --clock-check pi2b                         # -> remote_minus_local_ms = OFF
-moq-lora-recv --port /dev/cu.usbmodem21301 --profile 300000:100000:6 --secs 340 --out runs/f300_on \
-    --play --decode --raw-log --clock-offset-ms=$OFF --key-file ~/sx1276-link/moq-lora-key.hex
+# laptop: clock offset, then receiver
+moq-lora-recv --clock-check "$PI"                       # -> remote_minus_local_ms = OFF
+moq-lora-recv --port "$PORT" --profile 300000:100000:6 --secs 340 --out runs/f300_on \
+    --play --decode --raw-log --clock-offset-ms=$OFF --key-file "$LKEY"
 # Pi (3 s later)
 ./moq-lora-send --profile 300000:100000:6 --secs 330 --log /tmp/f300_on_send.jsonl --i-have-an-antenna \
-    --fec-k 8 --key-file /home/admin/moq-lora-key.hex
+    --fec-k 8 --key-file "$PKEY"
 ```
 
 Mac -> Pi (`scripts/rev.sh`), e.g. r350_off (12 B preamble at 300k, 14 B at 350k):
 
 ```sh
-moq-lora-recv --clock-check pi2b                         # X = Pi minus Mac; the Pi receiver gets -X
-ssh pi2b "cd ~/moq-lora && ./moq-lora-recv --radio --profile 350000:100000:14:x --secs 340 \
+moq-lora-recv --clock-check "$PI"                       # X = Pi minus laptop; the Pi receiver gets -X
+ssh "$PI" "cd ~/moq-lora && ./moq-lora-recv --radio --profile 350000:100000:14:x --secs 340 \
     --out /tmp/r350_off --decode --raw-log --clock-offset-ms=-$X"
-moq-lora-send --catwan /dev/cu.usbmodem21301 --profile 350000:100000:14:x --secs 330 \
+moq-lora-send --catwan "$PORT" --profile 350000:100000:14:x --secs 330 \
     --log runs/r350_off.send.jsonl --i-have-an-antenna --fec-k 8
 ```
 
