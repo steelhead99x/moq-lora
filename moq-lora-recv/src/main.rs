@@ -267,6 +267,11 @@ fn main() -> Result<()> {
         let (x, y) = a.size.split_once('x').context("--size WxH")?;
         (x.parse()?, y.parse()?)
     };
+    // read_barcode needs blocks at least 2 px wide and the full bar height; a zero
+    // size used to spin the decode thread forever on an empty read.
+    if w < 40 || h < stamp::BAR_ROWS {
+        bail!("--size must be at least 40x{}", stamp::BAR_ROWS);
+    }
     std::fs::create_dir_all(&a.out)?;
     let prof = parse_fsk_profile(&a.profile).map_err(|e| anyhow::anyhow!(e))?;
     let (br, fdev, pre, unchecked) = (prof.bitrate, prof.fdev, prof.preamble, prof.unchecked);
