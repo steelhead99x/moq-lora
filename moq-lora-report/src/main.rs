@@ -135,7 +135,10 @@ fn main() -> Result<()> {
             let Some(c) = &clock else { return Some(lat) };
             if reverse {
                 // receiver = Pi; used = -(Pi-laptop) at start; true = -(Pi-laptop)(t)
-                let x = c.at(t_us.saturating_sub((-used * 1000.0) as i64 as u64))?;
+                // laptop time = Pi time - (Pi - laptop) = t_us + used. Signed: when the
+                // Pi is behind, `used` is positive (the old u64 cast saturated to 0).
+                let laptop_us = (t_us as i64).checked_add((used * 1000.0) as i64)?;
+                let x = c.at(u64::try_from(laptop_us).ok()?)?;
                 Some(lat - used - x)
             } else {
                 Some(lat - used + c.at(t_us)?)
