@@ -192,8 +192,8 @@ More detail is in [scripts/README.md](scripts/README.md). The meaning of each co
   ```
   It costs 20 bytes per frame. A frame that fails the check is treated as lost. Know what
   this doesn't cover: there's no key exchange, a recorded frame can be replayed, and the
-  radio headers are sent unencrypted, so an attacker can cause loss or skew the loss counts,
-  but not read or change the picture. The tools refuse a key file that other users can read.
+  radio headers are sent unencrypted, so an attacker can cause loss or skew the loss counts.
+  Apart from replaying recorded frames, it can't read or change the picture. The tools refuse a key file that other users can read.
 * **Reverse direction (laptop to Pi).** Run `moq-lora-send --catwan /dev/cu.usbmodemXXXX` on
   the laptop and `moq-lora-recv --radio` on the Pi. Use a longer preamble, `300000:100000:12`
   (or `350000:100000:14:x`). The Pi's HAT can't signal when data has arrived, so the Pi has to
