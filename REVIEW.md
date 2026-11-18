@@ -129,12 +129,11 @@ queue stays small (the runs recorded `max_queue_frames` around 50). A faster enc
 or a stalled radio grows it without a cap. A cap would drop groups the current code
 still sends. Not changed.
 
-### Object id 255 starts a new group that may not be a keyframe. Deferred.
+### Object id 255 starts a new group that may not be a keyframe. Fixed.
 
-`moq-lora-send/src/main.rs` (the `key || obj == u8::MAX` branch just above the salt
-redraw). The gate will accept that group's object 0 even when it is not an IDR, so
-the decoder can be given a P-frame as a random access point. GOP 15 never reaches
-object 255. Not changed.
+`advance` in `moq-lora-send/src/main.rs` starts a group only on a keyframe; an encoder
+that sends more than 256 frames without one stops the run (`gop_overrun`) instead of
+handing the decoder a P-frame as a random access point.
 
 ### If the capture queue is empty, the object is stamped `frame_no = u32::MAX`. Deferred.
 
