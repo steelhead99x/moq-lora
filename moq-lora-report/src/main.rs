@@ -127,8 +127,14 @@ fn main() -> Result<()> {
             .max()
             .unwrap_or(u64::MAX);
         let cutoff = last_obj.saturating_add(1_000_000);
-        let reverse = s["link"].as_str() == Some("catwan")
-            || r["cpu_pct_recv"].is_number() && s["cpu_pct_total"].as_f64().unwrap_or(0.0) < 30.0;
+        // The CPU guess is only for summaries without `link`, such as the published runs
+        // in results/video; it labels a low-CPU forward run (the hardware encoder) reverse.
+        let reverse = match s["link"].as_str() {
+            Some(l) => l == "catwan",
+            None => {
+                r["cpu_pct_recv"].is_number() && s["cpu_pct_total"].as_f64().unwrap_or(0.0) < 30.0
+            }
+        };
         let used = r["clock_offset_ms"].as_f64().unwrap_or(0.0);
         // re-base one latency sample taken at receiver time t_us; None if the log doesn't cover it
         let rebase = |lat: f64, t_us: u64| -> Option<f64> {
