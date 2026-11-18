@@ -107,10 +107,14 @@ fn open_serial(path: &str) -> Result<File> {
 }
 
 /// A child process fed through a channel, so a slow consumer never blocks the radio loop.
+/// What it cannot take is dropped and counted, since a dropped AU breaks that consumer's
+/// picture (and, for the decoder, its latency samples) until the next keyframe.
 struct Sink {
     tx: Option<mpsc::SyncSender<Vec<u8>>>,
     th: Option<std::thread::JoinHandle<u64>>,
     child: Option<Child>,
+    /// Sends refused because the channel was full or the writer had stopped.
+    refused: std::cell::Cell<u64>,
 }
 impl Sink {
     fn new(mut stdin: ChildStdin, child: Option<Child>) -> Sink {
@@ -128,29 +132,49 @@ impl Sink {
             tx: Some(tx),
             th: Some(th),
             child,
+            refused: std::cell::Cell::new(0),
         }
     }
     fn send(&self, b: &[u8]) {
         if let Some(t) = &self.tx {
-            let _ = t.try_send(b.to_vec());
+            if t.try_send(b.to_vec()).is_err() {
+                self.refused.set(self.refused.get() + 1);
+            }
         }
     }
-    fn close(&mut self, kill_after: Duration) {
+    /// Close the input, wait for the child, and return how many AUs it never got:
+    /// refused by a full channel, or failed to write once the child stopped reading.
+    fn close(&mut self, kill_after: Duration) -> u64 {
+        // Close the input and give the writer `kill_after` to drain the backlog (up to 256
+        // AUs for a slow decoder), then the child `kill_after` to finish, then kill it, and
+        // only then join the writer: a child that stopped reading leaves the writer blocked
+        // on a full pipe until the child is gone.
         self.tx.take();
-        if let Some(t) = self.th.take() {
-            let _ = t.join();
+        let t0 = Instant::now();
+        while self.th.as_ref().is_some_and(|t| !t.is_finished()) && t0.elapsed() < kill_after {
+            std::thread::sleep(Duration::from_millis(50));
         }
         if let Some(mut c) = self.child.take() {
             let t0 = Instant::now();
-            while t0.elapsed() < kill_after {
-                if let Ok(Some(_)) = c.try_wait() {
-                    return;
+            while !matches!(c.try_wait(), Ok(Some(_))) {
+                if t0.elapsed() >= kill_after {
+                    let _ = c.kill();
+                    let _ = c.wait();
+                    break;
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-            let _ = c.kill();
-            let _ = c.wait();
         }
+        let mut dropped = self.refused.get();
+        if let Some(t) = self.th.take() {
+            match t.join() {
+                Ok(n) => dropped += n,
+                Err(_) => {
+                    eprintln!("a sink's writer thread panicked; its drop count is incomplete")
+                }
+            }
+        }
+        dropped
     }
 }
 
@@ -188,6 +212,16 @@ fn json_escape(s: &str) -> String {
     o
 }
 
+/// A JSON number, or `null` when there is no value. An empty latency list gives NaN,
+/// which JSON cannot carry (a run without `--decode` used to write invalid JSON).
+fn jnum(x: f64) -> String {
+    if x.is_finite() {
+        format!("{x:.1}")
+    } else {
+        "null".into()
+    }
+}
+
 fn pct(v: &mut [f64], p: f64) -> f64 {
     if v.is_empty() {
         return f64::NAN;
@@ -200,7 +234,7 @@ fn stalls(times_us: &[u64], thr_ms: f64) -> (u32, f64) {
     let mut n = 0;
     let mut worst = 0f64;
     for w in times_us.windows(2) {
-        let g = (w[1] - w[0]) as f64 / 1000.0;
+        let g = w[1].saturating_sub(w[0]) as f64 / 1000.0;
         worst = worst.max(g);
         if g > thr_ms {
             n += 1;
@@ -263,10 +297,22 @@ fn main() -> Result<()> {
     if !(902.0..=928.0).contains(&a.freq) || (a.freq - 925.0).abs() < 0.3 {
         bail!("--freq must be inside 902-928 MHz and not 925.0");
     }
+    // Both are printed into summary.json as numbers; NaN or infinity would make it invalid.
+    if !a.clock_offset_ms.is_finite() || !(a.stall_ms.is_finite() && a.stall_ms > 0.0) {
+        bail!("--clock-offset-ms must be finite and --stall-ms finite and positive");
+    }
     let (w, h): (usize, usize) = {
         let (x, y) = a.size.split_once('x').context("--size WxH")?;
         (x.parse()?, y.parse()?)
     };
+    // Only the decoder uses --size. read_barcode needs blocks at least 2 px wide and the
+    // full bar height, and a zero size would spin the decode thread on empty reads.
+    if a.decode && (w < 40 || h < stamp::BAR_ROWS) {
+        bail!(
+            "--size must be at least 40x{} with --decode",
+            stamp::BAR_ROWS
+        );
+    }
     std::fs::create_dir_all(&a.out)?;
     let prof = parse_fsk_profile(&a.profile).map_err(|e| anyhow::anyhow!(e))?;
     let (br, fdev, pre, unchecked) = (prof.bitrate, prof.fdev, prof.preamble, prof.unchecked);
@@ -404,10 +450,11 @@ fn main() -> Result<()> {
     };
     let mut rec = BufWriter::new(File::create(format!("{}/rec.h264", a.out))?);
     let mut objlog = BufWriter::new(File::create(format!("{}/objects.jsonl", a.out))?);
-    // single-threaded decode: frame threading would hold back (threads-1) frames
+    // Single-threaded decode: frame threading would hold back (threads-1) frames.
+    // No `-fflags nobuffer`: it discards the packets read while the stream is analysed,
+    // which cost every run its first GOP. Without it the decoder's steady-state latency
+    // measured the same; ffplay shares these flags and was not measured.
     let low = [
-        "-fflags",
-        "nobuffer",
         "-flags",
         "low_delay",
         "-probesize",
@@ -597,6 +644,7 @@ fn main() -> Result<()> {
         }
         Ok(())
     };
+    let mut port_closed = false;
     while t0.elapsed().as_secs_f64() < a.secs {
         match lrx.recv_timeout(Duration::from_millis(20)) {
             Ok((t, l)) => {
@@ -634,10 +682,12 @@ fn main() -> Result<()> {
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                if a.replay.is_some() {
-                    break;
+                if a.replay.is_none() {
+                    // Keep what we have: write the summary, then exit non-zero.
+                    eprintln!("serial port closed, stopping");
+                    port_closed = true;
                 }
-                bail!("serial port closed");
+                break;
             }
         }
         if last_rx.elapsed() > Duration::from_millis(150) {
@@ -660,8 +710,10 @@ fn main() -> Result<()> {
             std::thread::sleep(Duration::from_millis(5));
         }
     }
-    if let Some(mut wr) = port_w {
-        wr.write_all(b"S\n")?;
+    if let Some(mut wr) = port_w.filter(|_| !port_closed) {
+        if let Err(e) = wr.write_all(b"S\n") {
+            eprintln!("stopping the CatWAN failed: {e}");
+        }
         let t = Instant::now();
         while t.elapsed() < Duration::from_secs(2) {
             if let Ok((_, l)) = lrx.recv_timeout(Duration::from_millis(100)) {
@@ -677,15 +729,15 @@ fn main() -> Result<()> {
     if let Some(r) = raw.as_mut() {
         r.flush()?;
     }
-    if let Some(s) = play.as_mut() {
-        s.close(Duration::from_secs(3));
-    }
+    let play_dropped = play.as_mut().map(|s| s.close(Duration::from_secs(3)));
+    let mut decode_dropped = None;
     let (mut dtimes, dlat_t, unread) = if let Some(mut s) = dec.take() {
-        s.close(Duration::from_secs(5));
+        decode_dropped = Some(s.close(Duration::from_secs(5)));
         dec_th.take().unwrap().join().unwrap()
     } else {
         (Vec::new(), Vec::new(), 0)
     };
+    let opt = |v: Option<u64>| v.map_or("null".to_string(), |n| n.to_string());
     // The CLI decoder holds one frame until more input (or EOF) arrives; the frame it
     // flushes when we close its stdin at the end of the run is not a stall or latency
     // sample, so ignore decoded frames that appear >1 s after the last object.
@@ -696,7 +748,7 @@ fn main() -> Result<()> {
         .saturating_add(1_000_000);
     let flushed = dtimes.iter().filter(|&&t| t > cutoff).count();
     dtimes.retain(|&t| t <= cutoff);
-    let mut dlat: Vec<f64> = dlat_t
+    let dlat: Vec<f64> = dlat_t
         .iter()
         .filter(|(t, _)| *t <= cutoff)
         .map(|x| x.1)
@@ -710,25 +762,29 @@ fn main() -> Result<()> {
     let (dst, dworst) = stalls(&dtimes, a.stall_ms);
     let frames_expected = last_frame_no.saturating_sub(first_frame_no.unwrap_or(0)) as u64 + 1;
     let s = format!(
-        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"video_frame_loss\":{:.5},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{:.1},\"p95\":{:.1},\"max\":{:.1}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{:.1},\"p95\":{:.1},\"max\":{:.1}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{:.1},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"catwan\":\"{}\",\"decoded_flushed_at_end\":{flushed},\"cpu_pct_recv\":{:.1},\"cpu_pct_children\":{:.1},\"cpu_cores\":{}}}",
-        a.profile, re.frames_ok, re.frames_missing, re.frames_bad,
+        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frames_late\":{},\"radio_frames_stray\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"video_frame_loss\":{:.5},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"catwan\":\"{}\",\"decoded_flushed_at_end\":{flushed},\"cpu_pct_recv\":{:.1},\"cpu_pct_children\":{:.1},\"cpu_cores\":{},\"port_closed\":{port_closed},\"play_dropped_aus\":{},\"decode_dropped_aus\":{}}}",
+        a.profile, re.frames_ok, re.frames_missing, re.frames_bad, re.frames_late, re.frames_stray,
         re.frames_missing as f64 / (re.frames_ok + re.frames_missing).max(1) as f64,
         re.fec_recovered, obj_times.len(),
         1.0 - obj_times.len() as f64 / frames_expected.max(1) as f64,
         gate.groups_cut, gate.objects_skipped,
         delivered_bytes as f64 * 8.0 / span.max(1e-9), au_bytes_all as f64 * 8.0 / span.max(1e-9),
-        pct(&mut obj_lat.clone(), 0.5), pct(&mut obj_lat.clone(), 0.95), obj_lat.iter().cloned().fold(f64::NAN, f64::max),
-        dtimes.len(), pct(&mut dlat.clone(), 0.5), pct(&mut dlat.clone(), 0.95), dlat.iter_mut().map(|x| *x).fold(f64::NAN, f64::max),
-        a.stall_ms, rssi.iter().sum::<f64>() / rssi.len().max(1) as f64, a.clock_offset_ms,
+        jnum(pct(&mut obj_lat.clone(), 0.5)), jnum(pct(&mut obj_lat.clone(), 0.95)), jnum(obj_lat.iter().cloned().fold(f64::NAN, f64::max)),
+        dtimes.len(), jnum(pct(&mut dlat.clone(), 0.5)), jnum(pct(&mut dlat.clone(), 0.95)), jnum(dlat.iter().copied().fold(f64::NAN, f64::max)),
+        a.stall_ms, jnum(if rssi.is_empty() { f64::NAN } else { rssi.iter().sum::<f64>() / rssi.len() as f64 }), a.clock_offset_ms,
         sealer.as_ref().map(|x| x.cipher.name()).unwrap_or("none"),
         1e6 * open_s / ok_objs.max(1) as f64,
         rx_bytes as f64 * 8.0 / span.max(1e-9),
         json_escape(&stats_line),
         100.0 * cpu_s(libc::RUSAGE_SELF) / wall, 100.0 * cpu_s(libc::RUSAGE_CHILDREN) / wall,
-        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
+        opt(play_dropped), opt(decode_dropped),
     );
     std::fs::write(format!("{}/summary.json", a.out), &s)?;
     println!("{s}");
+    if port_closed {
+        std::process::exit(1);
+    }
     Ok(())
 }
 
@@ -743,7 +799,48 @@ fn cpu_s(who: i32) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::json_escape;
+    use super::{jnum, json_escape, Sink};
+    use std::process::{Command, Stdio};
+    use std::time::Duration;
+
+    fn child(cmd: &str, args: &[&str]) -> Sink {
+        let mut c = Command::new(cmd)
+            .args(args)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let si = c.stdin.take().unwrap();
+        Sink::new(si, Some(c))
+    }
+
+    #[test]
+    fn sink_counts_aus_a_stalled_child_never_got() {
+        // `sleep` never reads: the pipe fills, then the 256-deep channel, then sends are refused
+        let mut s = child("sleep", &["10"]);
+        let au = vec![0u8; 100_000];
+        for _ in 0..300 {
+            s.send(&au);
+        }
+        let dropped = s.close(Duration::from_millis(100));
+        assert!(dropped >= 300 - 256 - 2, "{dropped}");
+    }
+
+    #[test]
+    fn sink_counts_writes_to_a_child_that_exited() {
+        let mut s = child("true", &[]);
+        std::thread::sleep(Duration::from_millis(200)); // let it exit
+        for _ in 0..10 {
+            s.send(b"au");
+        }
+        assert_eq!(s.close(Duration::from_millis(100)), 10);
+    }
+
+    #[test]
+    fn jnum_writes_null_for_missing_values() {
+        assert_eq!(jnum(12.34), "12.3");
+        assert_eq!(jnum(f64::NAN), "null");
+        assert_eq!(jnum(f64::INFINITY), "null");
+    }
 
     #[test]
     fn json_escape_leaves_stats_and_quotes() {
