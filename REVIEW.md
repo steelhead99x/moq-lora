@@ -152,14 +152,14 @@ and was not touched.
 group/other permission bits. A mode change between `metadata` and `read` is not
 closed. Good enough for a pre-shared key on a single-user bench machine.
 
-### Harness still word-splits `RX`. Partially fixed.
+### Harness word-split the receiver's key path. Fixed.
 
-`scripts/run2.sh` and `scripts/rev.sh` now reject a clock offset that is not a number,
-and they quote the sender arguments and the remote paths with `printf %q`. `RX` is
-still split by the shell, so a key path with spaces breaks. Documented in
-`scripts/README.md`. `run2.sh` and `rev.sh` were kept separate: they drive opposite
-directions and the forward path waits 3 s, the reverse path 4 s. Folding them together
-would be a new harness, not a cleanup.
+`scripts/run2.sh` and `scripts/rev.sh` reject a clock offset that is not a number,
+quote the sender arguments and remote paths with `printf %q`, and take the receiver's
+key as `RX_KEY`, quoted on both sides of ssh, so a key path may contain spaces. `RX`
+still adds other receiver arguments and is split by the shell. `run2.sh` and `rev.sh`
+were kept separate: they drive opposite directions and the forward path waits 3 s, the
+reverse path 4 s. Folding them together would be a new harness, not a cleanup.
 
 ## Low
 
