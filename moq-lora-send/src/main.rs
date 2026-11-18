@@ -245,6 +245,20 @@ fn cpu_s(who: i32) -> f64 {
     tv(ru.ru_utime) + tv(ru.ru_stime)
 }
 
+/// Capture record for the next access unit: its frame number and capture time, and
+/// whether a captured frame backs it. An AU the encoder emits beyond the frames it was
+/// given has none; it reuses the last real frame number, so the receiver's expected
+/// count stays honest (a `u32::MAX` stamp made it expect 2^32 frames).
+fn next_capture(caps: &mut VecDeque<(u32, u64)>, last: &mut u32, now: u64) -> (u32, u64, bool) {
+    match caps.pop_front() {
+        Some((n, t)) => {
+            *last = n;
+            (n, t, true)
+        }
+        None => (*last, now, false),
+    }
+}
+
 fn random_u32() -> u32 {
     let mut b = [0u8; 4];
     std::fs::File::open("/dev/urandom")
@@ -552,6 +566,7 @@ fn main() -> Result<()> {
         None => None,
     };
     let mut session = random_u32();
+    let (mut last_frame_no, mut uncaptured) = (0u32, 0u64);
     let mut seal_s = 0f64;
     let mut obj_bytes = 0u64;
     let mut frag = Fragmenter::new(a.fec_k).map_err(|x| anyhow::anyhow!("{x:?}"))?;
@@ -564,7 +579,12 @@ fn main() -> Result<()> {
     {
         let mut handle = |au: Vec<u8>| -> Result<()> {
             let now = unix_us();
-            let (frame_no, cap_us) = caps.lock().unwrap().pop_front().unwrap_or((u32::MAX, now));
+            let (frame_no, cap_us, captured) =
+                next_capture(&mut caps.lock().unwrap(), &mut last_frame_no, now);
+            if !captured {
+                uncaptured += 1;
+                eprintln!("access unit with no capture record, after frame {frame_no}");
+            }
             let key = annexb::is_key(&au);
             if key || obj == u8::MAX {
                 group = group.wrapping_add(1);
@@ -599,7 +619,7 @@ fn main() -> Result<()> {
                 }
             };
             if let Some(l) = log.as_mut() {
-                writeln!(l, "{{\"t_us\":{now},\"group\":{group},\"obj\":{obj},\"frame_no\":{frame_no},\"key\":{key},\"au_bytes\":{},\"frames\":{},\"cap_us\":{cap_us},\"enc_us\":{}}}", au.len(), frames.len(), oh.enc_us)?;
+                writeln!(l, "{{\"t_us\":{now},\"group\":{group},\"obj\":{obj},\"frame_no\":{frame_no},\"captured\":{captured},\"key\":{key},\"au_bytes\":{},\"frames\":{},\"cap_us\":{cap_us},\"enc_us\":{}}}", au.len(), frames.len(), oh.enc_us)?;
             }
             objects += 1;
             au_bytes += au.len() as u64;
@@ -662,7 +682,7 @@ fn main() -> Result<()> {
     let (cpu_self, cpu_child) = (cpu_s(libc::RUSAGE_SELF), cpu_s(libc::RUSAGE_CHILDREN));
     let objs = objects.max(1) as f64;
     println!(
-        "{{\"role\":\"send\",\"profile\":\"{}\",\"freq_hz\":{freq_hz},\"power_dbm\":{},\"size\":\"{}\",\"fps\":{},\"gop\":{},\"encoder\":\"{}\",\"bitrate_target\":{},\"fec_k\":{},\"min_frame\":{},\"wall_s\":{wall:.2},\"captured\":{captured},\"objects\":{objects},\"keyframes\":{keys},\"video_bps\":{:.0},\"frames_tx\":{},\"bytes_tx\":{},\"radio_busy_pct\":{:.1},\"air_bps\":{:.0},\"objects_dropped\":{},\"groups_dropped\":{},\"tx_errors\":{},\"max_queue_frames\":{},\"cipher\":\"{}\",\"au_bytes\":{au_bytes},\"object_bytes\":{obj_bytes},\"overhead_per_object\":{{\"objhdr\":{},\"aead\":{},\"frame_headers_crc\":{:.1},\"padding_parity\":{:.1},\"total_air\":{:.1}}},\"seal_us_per_object\":{:.1},\"cpu_pct_sender\":{:.1},\"cpu_pct_ffmpeg\":{:.1},\"cpu_pct_total\":{:.1},\"cpu_cores\":{},\"link\":\"{}\",\"tx_fatal\":{tx_fatal},\"encoder_ok\":{enc_ok}}}",
+        "{{\"role\":\"send\",\"profile\":\"{}\",\"freq_hz\":{freq_hz},\"power_dbm\":{},\"size\":\"{}\",\"fps\":{},\"gop\":{},\"encoder\":\"{}\",\"bitrate_target\":{},\"fec_k\":{},\"min_frame\":{},\"wall_s\":{wall:.2},\"captured\":{captured},\"objects\":{objects},\"keyframes\":{keys},\"video_bps\":{:.0},\"frames_tx\":{},\"bytes_tx\":{},\"radio_busy_pct\":{:.1},\"air_bps\":{:.0},\"objects_dropped\":{},\"groups_dropped\":{},\"tx_errors\":{},\"max_queue_frames\":{},\"cipher\":\"{}\",\"au_bytes\":{au_bytes},\"object_bytes\":{obj_bytes},\"overhead_per_object\":{{\"objhdr\":{},\"aead\":{},\"frame_headers_crc\":{:.1},\"padding_parity\":{:.1},\"total_air\":{:.1}}},\"seal_us_per_object\":{:.1},\"cpu_pct_sender\":{:.1},\"cpu_pct_ffmpeg\":{:.1},\"cpu_pct_total\":{:.1},\"cpu_cores\":{},\"link\":\"{}\",\"tx_fatal\":{tx_fatal},\"encoder_ok\":{enc_ok},\"aus_without_capture\":{uncaptured}}}",
         a.profile, a.power, a.size, a.fps, a.gop, a.encoder, a.bitrate, a.fec_k, a.min_frame, au_bytes as f64 * 8.0 / wall, st.frames, st.bytes,
         100.0 * busy / wall, st.bytes as f64 * 8.0 / wall, st.objects_dropped, st.groups_dropped, st.tx_errors, st.max_queue_frames,
         sealer.as_ref().map(|x| x.cipher.name()).unwrap_or("none"),
@@ -676,11 +696,30 @@ fn main() -> Result<()> {
         std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
         if a.loopback.is_some() { "loopback" } else if a.catwan.is_some() { "catwan" } else { "sx1276" }
     );
-    if tx_fatal || captured == 0 || !enc_ok {
+    // An AU with no capture record means the encoder and the capture count disagree,
+    // so the run's latency and loss numbers can't be trusted.
+    if tx_fatal || captured == 0 || !enc_ok || uncaptured > 0 {
         // The summary above is the last line on stdout (the harness reads it with
         // `tail -1`); report the failure through the exit status only.
-        eprintln!("run failed: tx_fatal={tx_fatal} captured={captured} encoder_ok={enc_ok}");
+        eprintln!("run failed: tx_fatal={tx_fatal} captured={captured} encoder_ok={enc_ok} aus_without_capture={uncaptured}");
         std::process::exit(1);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_capture;
+    use std::collections::VecDeque;
+
+    #[test]
+    fn uncaptured_au_reuses_the_last_frame_number() {
+        let mut caps = VecDeque::from([(7, 100), (8, 200)]);
+        let mut last = 0;
+        assert_eq!(next_capture(&mut caps, &mut last, 999), (7, 100, true));
+        assert_eq!(next_capture(&mut caps, &mut last, 999), (8, 200, true));
+        assert_eq!(next_capture(&mut caps, &mut last, 999), (8, 999, false));
+        // before any capture: frame 0, not u32::MAX
+        assert_eq!(next_capture(&mut VecDeque::new(), &mut 0, 5), (0, 5, false));
+    }
 }
