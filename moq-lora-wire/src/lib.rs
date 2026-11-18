@@ -523,6 +523,9 @@ pub struct Reassembler {
     pub frames_missing: u64,
     pub frames_bad: u64,
     pub frames_dup: u64,
+    /// Frames whose sequence number is behind the newest seen: reordered, or replayed.
+    /// They are still reassembled but don't move the loss baseline.
+    pub frames_late: u64,
     pub fec_recovered: u64,
 }
 
@@ -537,21 +540,33 @@ impl Reassembler {
             self.frames_bad += 1;
             return ev;
         };
-        if let Some(l) = self.last_seq {
-            let d = h.seq.wrapping_sub(l);
-            if d == 0 {
+        match self.last_seq.map(|l| h.seq.wrapping_sub(l)) {
+            Some(0) => {
                 self.frames_dup += 1;
                 return ev;
             }
-            if d < 0x8000 {
-                self.frames_missing += d as u64 - 1;
+            // Behind the newest frame. Moving the baseline back would make the next
+            // honest frame look like a gap of up to 32k frames, so leave it.
+            Some(d) if d >= 0x8000 => self.frames_late += 1,
+            d => {
+                self.frames_missing += d.map_or(0, |d| d as u64 - 1);
+                self.last_seq = Some(h.seq);
             }
         }
-        self.last_seq = Some(h.seq);
-        self.frames_ok += 1;
+        // Each frame lands in exactly one of frames_ok and frames_bad.
+        if self.place(h, pl, &mut ev) {
+            self.frames_ok += 1;
+        } else {
+            self.frames_bad += 1;
+        }
+        ev
+    }
+
+    /// Store a CRC-valid frame in its object; false when it contradicts the object.
+    fn place(&mut self, h: FrameHdr, pl: &[u8], ev: &mut Vec<Event>) -> bool {
         let key = (h.group, h.obj);
         if self.done == Some(key) {
-            return ev; // trailing parity of an object already delivered
+            return true; // trailing parity of an object already delivered
         }
         if self
             .cur
@@ -562,25 +577,21 @@ impl Reassembler {
         }
         let p = self.cur.get_or_insert_with(|| Partial::new(h));
         if p.h.objlen != h.objlen || p.h.k != h.k {
-            self.frames_bad += 1;
-            return ev;
+            return false;
         }
         if h.parity {
             let Some(slot) = p.parity.get_mut(h.idx as usize) else {
-                self.frames_bad += 1;
-                return ev;
+                return false;
             };
             let n = pl.len().min(h.chunk_size());
             slot.get_or_insert_with(|| pl[..n].to_vec());
         } else {
             let n = h.chunk_len(h.idx as usize);
             if pl.len() < n {
-                self.frames_bad += 1;
-                return ev;
+                return false;
             }
             let Some(slot) = p.chunks.get_mut(h.idx as usize) else {
-                self.frames_bad += 1;
-                return ev;
+                return false;
             };
             slot.get_or_insert_with(|| pl[..n].to_vec());
         }
@@ -591,7 +602,7 @@ impl Reassembler {
             self.fec_recovered += p.recovered as u64;
             ev.push(p.into_event());
         }
-        ev
+        true
     }
 
     /// Finalize the object in progress (call when the link has been idle a while).
@@ -645,6 +656,13 @@ impl GroupGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_crc_for_test(f: &mut [u8]) {
+        f[10] = 0;
+        f[11] = 0;
+        let c = crc16(f);
+        f[10..12].copy_from_slice(&c.to_be_bytes());
+    }
 
     fn obj(n: usize, seed: u8) -> Vec<u8> {
         (0..n)
@@ -797,6 +815,71 @@ mod tests {
                 "n={n}"
             );
         }
+    }
+
+    /// Re-stamp a frame's sequence number (and its CRC), as a replaying peer would.
+    fn with_seq(fr: &[u8], seq: u16) -> Vec<u8> {
+        let mut f = fr.to_vec();
+        f[0..2].copy_from_slice(&seq.to_be_bytes());
+        write_crc_for_test(&mut f);
+        f
+    }
+
+    #[test]
+    fn backward_seq_does_not_skew_loss() {
+        let mut f = Fragmenter::new(0).unwrap();
+        let frames: Vec<Vec<u8>> = (0..4)
+            .flat_map(|o| f.fragment(1, o, &obj(100, o)).unwrap())
+            .collect(); // seq 0..=3, one frame per object
+        let mut r = Reassembler::new();
+        let mut ev = vec![];
+        for fr in &frames[..3] {
+            ev.extend(r.push(fr));
+        }
+        // a stale copy of frame 2 stamped far in the past
+        ev.extend(r.push(&with_seq(&frames[2], 2u16.wrapping_sub(0x7000))));
+        ev.extend(r.push(&frames[3]));
+        ev.extend(r.flush());
+        assert_eq!(
+            r.frames_missing, 0,
+            "one old seq made honest frames look lost"
+        );
+        assert_eq!(r.frames_late, 1);
+        assert_eq!(
+            ev.iter()
+                .filter(|e| matches!(e, Event::Object { .. }))
+                .count(),
+            4
+        );
+
+        // a late frame still completes its object
+        let mut f = Fragmenter::new(0).unwrap();
+        let a = f.fragment(2, 0, &obj(500, 1)).unwrap(); // 3 frames, seq 0..=2
+        let mut r = Reassembler::new();
+        let mut ev = vec![];
+        for fr in [&a[0], &a[2], &a[1]] {
+            ev.extend(r.push(fr));
+        }
+        assert!(matches!(ev.last(), Some(Event::Object { .. })), "{ev:?}");
+        assert_eq!((r.frames_late, r.frames_missing), (1, 1));
+    }
+
+    #[test]
+    fn frame_counted_once() {
+        let mut f = Fragmenter::new(0).unwrap();
+        let a = f.fragment(1, 0, &obj(600, 2)).unwrap();
+        let mut r = Reassembler::new();
+        r.push(&a[0]);
+        // same object id, different objlen: CRC-valid, inconsistent
+        let mut g = Fragmenter::new(0).unwrap();
+        g.seq = 1;
+        let b = g.fragment(1, 0, &obj(300, 3)).unwrap();
+        r.push(&b[1]);
+        assert_eq!(
+            (r.frames_ok, r.frames_bad),
+            (1, 1),
+            "bad frame also counted ok"
+        );
     }
 
     #[test]
