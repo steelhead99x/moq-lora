@@ -21,6 +21,9 @@ The results are in [table.md](table.md). The README shows the four forward runs 
 * **g2g**: from capture to the frame being decoded on the receiver, read from the barcode in the
   picture. It includes the one frame (~67 ms) that the ffmpeg CLI decoder holds back.
   Both latencies are corrected for the clock difference between the machines, using a clock check every 5 s.
+  The runs here used a decoder that dropped each run's first GOP (`-fflags nobuffer`), so their
+  decoded counts and g2g leave out the first second. Runs from the fix on keep every frame, which
+  raises g2g p95 by including the slow startup frames; steady-state latency is unchanged.
 * **stalls**: gaps over 250 ms between delivered frames (obj) and between decoded frames (dec).
 * **Pi CPU**: percent of one Cortex-A7 core (the Pi 2 has four). For Pi to laptop runs this is the
   sender plus its ffmpeg. For laptop to Pi it's the receiver, which keeps checking the radio
