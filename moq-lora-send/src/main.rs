@@ -375,8 +375,8 @@ fn cpu_s(who: i32) -> f64 {
 
 /// Capture record for the next access unit: its frame number and capture time, and
 /// whether a captured frame backs it. An AU the encoder emits beyond the frames it was
-/// given has none; it reuses the last real frame number, so the receiver's expected
-/// count stays honest (a `u32::MAX` stamp made it expect 2^32 frames).
+/// given has none; it reuses the last real frame number, because the receiver counts
+/// expected frames from first to last frame number and any sentinel would inflate it.
 fn next_capture(caps: &mut VecDeque<(u32, u64)>, last: &mut u32, now: u64) -> (u32, u64, bool) {
     match caps.pop_front() {
         Some((n, t)) => {
@@ -582,11 +582,13 @@ fn main() -> Result<()> {
     let stop = Arc::new(AtomicBool::new(false));
     let caps: Arc<Mutex<VecDeque<(u32, u64)>>> = Arc::default();
     let t_run = Instant::now();
+    let cap_done = Arc::new(AtomicBool::new(false));
+    let source_stalled = Arc::new(AtomicBool::new(false));
 
     // ---- capture thread: raw frames -> stamp -> encoder
     let cap_thread = {
         let (mut sout, mut ein) = (src.stdout.take().unwrap(), enc.stdin.take().unwrap());
-        let (stop, caps, secs) = (stop.clone(), caps.clone(), a.secs);
+        let (stop, caps, secs, done) = (stop.clone(), caps.clone(), a.secs, cap_done.clone());
         let label = format!("FSK {}k #", prof.bitrate / 1000);
         std::thread::spawn(move || -> Result<u32> {
             let mut buf = vec![0u8; w * h * 3 / 2];
@@ -606,7 +608,41 @@ fn main() -> Result<()> {
                 }
                 n += 1;
             }
+            done.store(true, Ordering::Relaxed);
             Ok(n) // dropping `ein` closes the encoder input -> encoder flushes and exits
+        })
+    };
+
+    // ---- watchdog: the capture thread checks --secs and `stop` only between frames, so
+    // a source that stays up but sends nothing would block it, and the run, forever.
+    // Two seconds past either, kill the source; its pipe closes and the read returns.
+    let watchdog = {
+        let (done, stop, stalled, secs) = (
+            cap_done.clone(),
+            stop.clone(),
+            source_stalled.clone(),
+            a.secs,
+        );
+        let pid = src.id() as libc::pid_t;
+        std::thread::spawn(move || {
+            let grace = Duration::from_secs(2);
+            let mut stopped_at: Option<Instant> = None;
+            while !done.load(Ordering::Relaxed) {
+                if stop.load(Ordering::Relaxed) {
+                    stopped_at.get_or_insert_with(Instant::now);
+                }
+                let overdue = t_run.elapsed().as_secs_f64() > secs + grace.as_secs_f64()
+                    || stopped_at.is_some_and(|t| t.elapsed() > grace);
+                if overdue {
+                    eprintln!("video source sent no frame for {grace:?}, killing it");
+                    stalled.store(true, Ordering::Relaxed);
+                    // SAFETY: main reaps the source only after joining this thread, so the
+                    // pid still names it.
+                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
         })
     };
 
@@ -780,7 +816,7 @@ fn main() -> Result<()> {
                 }
             };
             if let Some(l) = log.as_mut() {
-                writeln!(l, "{{\"t_us\":{now},\"group\":{group},\"obj\":{obj},\"frame_no\":{frame_no},\"captured\":{captured},\"key\":{key},\"au_bytes\":{},\"frames\":{},\"cap_us\":{cap_us},\"enc_us\":{}}}", au.len(), frames.len(), oh.enc_us)?;
+                writeln!(l, "{{\"t_us\":{now},\"group\":{group},\"obj\":{obj},\"frame_no\":{frame_no},\"has_capture\":{captured},\"key\":{key},\"au_bytes\":{},\"frames\":{},\"cap_us\":{cap_us},\"enc_us\":{}}}", au.len(), frames.len(), oh.enc_us)?;
             }
             objects += 1;
             au_bytes += au.len() as u64;
@@ -825,12 +861,20 @@ fn main() -> Result<()> {
     done.store(true, Ordering::Relaxed);
     q.1.notify_all();
     let captured = cap_thread.join().unwrap().unwrap_or(0);
+    let _ = watchdog.join(); // before reaping the source, whose pid it may still kill
+    let source_stalled = source_stalled.load(Ordering::Relaxed);
     let _ = src.kill();
     let _ = src.wait();
     // The source is killed on purpose, so its exit status says nothing; a source that
     // never produced a frame shows up as `captured == 0`. The encoder exits on its own
     // once its input closes, so a failure there is real.
-    let enc_ok = enc.wait().map(|s| s.success()).unwrap_or(false);
+    let enc_ok = match enc.wait() {
+        Ok(s) => s.success(),
+        Err(e) => {
+            eprintln!("waiting for the encoder: {e}");
+            false
+        }
+    };
     let _ = rd_thread.join();
     let (mut st, mut link, busy, tx_fatal) = tx_thread.join().unwrap();
     #[cfg(target_os = "linux")]
@@ -849,7 +893,7 @@ fn main() -> Result<()> {
     let (cpu_self, cpu_child) = (cpu_s(libc::RUSAGE_SELF), cpu_s(libc::RUSAGE_CHILDREN));
     let objs = objects.max(1) as f64;
     println!(
-        "{{\"role\":\"send\",\"profile\":\"{}\",\"freq_hz\":{freq_hz},\"power_dbm\":{},\"size\":\"{}\",\"fps\":{},\"gop\":{},\"encoder\":\"{}\",\"bitrate_target\":{},\"fec_k\":{},\"min_frame\":{},\"wall_s\":{wall:.2},\"captured\":{captured},\"objects\":{objects},\"keyframes\":{keys},\"video_bps\":{:.0},\"frames_tx\":{},\"bytes_tx\":{},\"radio_busy_pct\":{:.1},\"air_bps\":{:.0},\"objects_dropped\":{},\"groups_dropped\":{},\"tx_errors\":{},\"max_queue_frames\":{},\"queue_cap_frames\":{queue_cap},\"objects_dropped_queue_full\":{},\"groups_dropped_queue_full\":{},\"cipher\":\"{}\",\"au_bytes\":{au_bytes},\"object_bytes\":{obj_bytes},\"overhead_per_object\":{{\"objhdr\":{},\"aead\":{},\"frame_headers_crc\":{:.1},\"padding_parity\":{:.1},\"total_air\":{:.1}}},\"seal_us_per_object\":{:.1},\"cpu_pct_sender\":{:.1},\"cpu_pct_ffmpeg\":{:.1},\"cpu_pct_total\":{:.1},\"cpu_cores\":{},\"link\":\"{}\",\"tx_fatal\":{tx_fatal},\"encoder_ok\":{enc_ok},\"aus_without_capture\":{uncaptured},\"gop_overrun\":{gop_overrun}}}",
+        "{{\"role\":\"send\",\"profile\":\"{}\",\"freq_hz\":{freq_hz},\"power_dbm\":{},\"size\":\"{}\",\"fps\":{},\"gop\":{},\"encoder\":\"{}\",\"bitrate_target\":{},\"fec_k\":{},\"min_frame\":{},\"wall_s\":{wall:.2},\"captured\":{captured},\"objects\":{objects},\"keyframes\":{keys},\"video_bps\":{:.0},\"frames_tx\":{},\"bytes_tx\":{},\"radio_busy_pct\":{:.1},\"air_bps\":{:.0},\"objects_dropped\":{},\"groups_dropped\":{},\"tx_errors\":{},\"max_queue_frames\":{},\"queue_cap_frames\":{queue_cap},\"objects_dropped_queue_full\":{},\"groups_dropped_queue_full\":{},\"cipher\":\"{}\",\"au_bytes\":{au_bytes},\"object_bytes\":{obj_bytes},\"overhead_per_object\":{{\"objhdr\":{},\"aead\":{},\"frame_headers_crc\":{:.1},\"padding_parity\":{:.1},\"total_air\":{:.1}}},\"seal_us_per_object\":{:.1},\"cpu_pct_sender\":{:.1},\"cpu_pct_ffmpeg\":{:.1},\"cpu_pct_total\":{:.1},\"cpu_cores\":{},\"link\":\"{}\",\"tx_fatal\":{tx_fatal},\"encoder_ok\":{enc_ok},\"source_stalled\":{source_stalled},\"aus_without_capture\":{uncaptured},\"gop_overrun\":{gop_overrun}}}",
         a.profile, a.power, a.size, a.fps, a.gop, a.encoder, a.bitrate, a.fec_k, a.min_frame, au_bytes as f64 * 8.0 / wall, st.frames, st.bytes,
         100.0 * busy / wall, st.bytes as f64 * 8.0 / wall, st.objects_dropped, st.groups_dropped, st.tx_errors, st.max_queue_frames, qdrops.objects, qdrops.groups,
         sealer.as_ref().map(|x| x.cipher.name()).unwrap_or("none"),
@@ -865,10 +909,10 @@ fn main() -> Result<()> {
     );
     // An AU with no capture record means the encoder and the capture count disagree,
     // so the run's latency and loss numbers can't be trusted.
-    if tx_fatal || captured == 0 || !enc_ok || uncaptured > 0 || gop_overrun {
+    if tx_fatal || captured == 0 || !enc_ok || source_stalled || uncaptured > 0 || gop_overrun {
         // The summary above is the last line on stdout (the harness reads it with
         // `tail -1`); report the failure through the exit status only.
-        eprintln!("run failed: tx_fatal={tx_fatal} captured={captured} encoder_ok={enc_ok} aus_without_capture={uncaptured} gop_overrun={gop_overrun}");
+        eprintln!("run failed: tx_fatal={tx_fatal} captured={captured} encoder_ok={enc_ok} source_stalled={source_stalled} aus_without_capture={uncaptured} gop_overrun={gop_overrun}");
         std::process::exit(1);
     }
     Ok(())
@@ -877,6 +921,7 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{advance, next_capture, push_bounded, queue_cap_frames, QueueDrops, TxObj};
+    use std::collections::VecDeque;
     use std::collections::VecDeque as Q;
 
     fn obj(group: u16, frames: usize, started: bool) -> TxObj {
@@ -938,7 +983,6 @@ mod tests {
         assert_eq!(advance(3, 255, true), Some((4, 0)));
         assert_eq!(advance(u16::MAX, 7, true), Some((0, 0))); // group id wraps
     }
-    use std::collections::VecDeque;
 
     #[test]
     fn uncaptured_au_reuses_the_last_frame_number() {
