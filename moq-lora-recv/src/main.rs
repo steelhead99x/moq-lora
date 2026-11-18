@@ -284,6 +284,10 @@ fn main() -> Result<()> {
     if !(902.0..=928.0).contains(&a.freq) || (a.freq - 925.0).abs() < 0.3 {
         bail!("--freq must be inside 902-928 MHz and not 925.0");
     }
+    // Both are printed into summary.json as numbers; NaN or infinity would make it invalid.
+    if !a.clock_offset_ms.is_finite() || !(a.stall_ms.is_finite() && a.stall_ms > 0.0) {
+        bail!("--clock-offset-ms must be finite and --stall-ms finite and positive");
+    }
     let (w, h): (usize, usize) = {
         let (x, y) = a.size.split_once('x').context("--size WxH")?;
         (x.parse()?, y.parse()?)
@@ -685,7 +689,9 @@ fn main() -> Result<()> {
         }
     }
     if let Some(mut wr) = port_w.filter(|_| !port_closed) {
-        let _ = wr.write_all(b"S\n");
+        if let Err(e) = wr.write_all(b"S\n") {
+            eprintln!("stopping the CatWAN failed: {e}");
+        }
         let t = Instant::now();
         while t.elapsed() < Duration::from_secs(2) {
             if let Ok((_, l)) = lrx.recv_timeout(Duration::from_millis(100)) {
