@@ -1,5 +1,5 @@
 #!/bin/bash
-# Pi -> CatWAN/laptop.  usage: [RX="extra recv args"] run2.sh NAME PROFILE SECS [sender args...]
+# Pi -> CatWAN/laptop.  usage: [RX_KEY=path] [RX="extra recv args"] run2.sh NAME PROFILE SECS [sender args...]
 # See scripts/README.md. Sender arguments are quoted for the remote shell.
 set -u
 N=$1
@@ -13,7 +13,7 @@ printf '%s\n' "$OFF" | grep -Eq '^-?[0-9]+(\.[0-9]+)?$' || { echo "clock offset 
 echo "$OFF" > "$RUNS/$N.clock_start"
 # shellcheck disable=SC2086
 "$BIN/moq-lora-recv" --port "$PORT" --profile "$P" --secs $((S + 10)) --out "$RUNS/$N" --play --decode --raw-log \
-    --clock-offset-ms="$OFF" ${RX:-} > "$RUNS/$N.out" 2>&1 &
+    --clock-offset-ms="$OFF" ${RX_KEY:+--key-file "$RX_KEY"} ${RX:-} > "$RUNS/$N.out" 2>&1 &
 sleep 3
 remote_args=$(printf '%q ' "$@")
 # shellcheck disable=SC2086
