@@ -82,6 +82,52 @@ pub fn read_line_limited(
     }
 }
 
+/// Decode a hex string into bytes. `None` for odd length or any non-hex character.
+///
+/// Works on bytes, not `str` slices: serial lines are decoded lossily, so a stray
+/// byte becomes a multi-byte U+FFFD and a `&s[2 * i..2 * i + 2]` slice would panic
+/// on the char boundary. An empty string is an empty vector.
+pub fn decode_hex(s: &str) -> Option<Vec<u8>> {
+    fn val(c: u8) -> Option<u8> {
+        match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            b'a'..=b'f' => Some(c - b'a' + 10),
+            b'A'..=b'F' => Some(c - b'A' + 10),
+            _ => None,
+        }
+    }
+    let b = s.as_bytes();
+    if !b.len().is_multiple_of(2) {
+        return None;
+    }
+    b.chunks_exact(2)
+        .map(|p| Some(val(p[0])? << 4 | val(p[1])?))
+        .collect()
+}
+
+/// One received frame as reported by the CatWAN firmware, the Pi receiver thread or
+/// the loopback file: `R <t_us> <rssi> <snr> <hex>`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RLine {
+    /// RSSI in dBm, when the field parsed.
+    pub rssi: Option<i32>,
+    pub frame: Vec<u8>,
+}
+
+/// Parse an `R` line. `None` when the line is not an `R` line or its hex field is
+/// malformed (odd length, non-hex, or longer than a radio frame).
+pub fn parse_r_line(l: &str) -> Option<RLine> {
+    let mut it = l.strip_prefix("R ")?.split(' ');
+    let (_t, rssi, _snr, hx) = (it.next(), it.next(), it.next(), it.next().unwrap_or(""));
+    if hx.len() > 2 * MAX_FRAME {
+        return None;
+    }
+    Some(RLine {
+        rssi: rssi.and_then(|s| s.parse().ok()),
+        frame: decode_hex(hx)?,
+    })
+}
+
 /// `BITRATE:FDEV:PREAMBLE[:x]`. `x` is the only accepted suffix (datasheet limits off).
 /// Bitrate must be non-zero so airtime math cannot divide by zero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -884,6 +930,31 @@ mod tests {
         assert!(parse_fsk_profile("300000:100000:6:y").is_err());
         assert!(parse_fsk_profile("300000:100000").is_err());
         assert!(parse_fsk_profile("300000:100000:65536").is_err());
+    }
+
+    #[test]
+    fn hex_and_r_lines() {
+        assert_eq!(decode_hex(""), Some(vec![]));
+        assert_eq!(decode_hex("0aFf"), Some(vec![0x0a, 0xff]));
+        assert_eq!(decode_hex("abc"), None);
+        assert_eq!(decode_hex("zz"), None);
+        assert_eq!(decode_hex("+1"), None); // from_str_radix would accept a sign
+        assert_eq!(decode_hex("a\u{fffd}b"), None); // used to panic on a char boundary
+        assert_eq!(decode_hex("\u{e9}"), None);
+        assert_eq!(
+            parse_r_line("R 12 -50 0 0102"),
+            Some(RLine {
+                rssi: Some(-50),
+                frame: vec![1, 2]
+            })
+        );
+        assert_eq!(parse_r_line("R 12 x 0 01").unwrap().rssi, None);
+        assert_eq!(parse_r_line("R 12 -50 0").unwrap().frame, Vec::<u8>::new());
+        assert_eq!(parse_r_line("R 0 -50 0 a\u{e9}"), None);
+        assert_eq!(parse_r_line("R 0 -50 0 abc"), None);
+        assert_eq!(parse_r_line("X 0 Crc"), None);
+        assert!(parse_r_line(&format!("R 0 0 0 {}", "00".repeat(MAX_FRAME))).is_some());
+        assert!(parse_r_line(&format!("R 0 0 0 {}", "00".repeat(MAX_FRAME + 1))).is_none());
     }
 
     #[test]
