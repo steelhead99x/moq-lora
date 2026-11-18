@@ -876,7 +876,7 @@ fn main() -> Result<()> {
         }
     };
     let _ = rd_thread.join();
-    let (mut st, mut link, busy, tx_fatal) = tx_thread.join().unwrap();
+    let (mut st, mut link, busy, mut tx_fatal) = tx_thread.join().unwrap();
     #[cfg(target_os = "linux")]
     if let Link::Radio(r) = &mut link {
         r.idle();
@@ -888,7 +888,12 @@ fn main() -> Result<()> {
         std::thread::sleep(Duration::from_millis(300)); // let the stick drain its queue
         let _ = write_deadline(w, b"\nS\n", CATWAN_WRITE_TIMEOUT);
     }
+    // Errors the stick reports while draining its queue count toward the same limit.
     st.tx_errors += link.take_stick_errors();
+    if st.tx_errors > 20 && !tx_fatal {
+        eprintln!("too many TX errors ({})", st.tx_errors);
+        tx_fatal = true;
+    }
     drop(log);
     let (cpu_self, cpu_child) = (cpu_s(libc::RUSAGE_SELF), cpu_s(libc::RUSAGE_CHILDREN));
     let objs = objects.max(1) as f64;
