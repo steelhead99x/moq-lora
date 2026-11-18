@@ -169,27 +169,54 @@ pub(crate) fn wipe(buf: &mut [u8]) {
     std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
 }
 
+/// Longest key file accepted. A 32-byte key is 64 hex characters; the rest is room
+/// for whitespace, not for reading an arbitrary file.
+pub const MAX_KEY_FILE: usize = 1024;
+
 /// Read a pre-shared key. On Unix the file must be mode 0600 (or stricter:
-/// no group/other permission bits). The hex text is wiped before return;
+/// no group/other permission bits), checked on the open file, and at most
+/// [`MAX_KEY_FILE`] bytes. The hex text is wiped before return;
 /// the returned bytes are the raw key and should be wiped by the caller
 /// after they are copied into the AEAD key.
 pub fn read_key_file(path: &std::path::Path) -> Result<Vec<u8>, ReadKeyError> {
+    use std::io::Read;
+    // One handle for the check and the read, so the file cannot be swapped for a
+    // looser one in between. Opened non-blocking so a FIFO path fails the type check
+    // below instead of blocking until a writer appears.
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NONBLOCK);
+    }
+    let f = opts.open(path).map_err(ReadKeyError::Io)?;
+    let meta = f.metadata().map_err(ReadKeyError::Io)?;
+    if !meta.is_file() {
+        return Err(ReadKeyError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "key path is not a file",
+        )));
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let meta = std::fs::metadata(path).map_err(ReadKeyError::Io)?;
-        if !meta.is_file() {
-            return Err(ReadKeyError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "key path is not a file",
-            )));
-        }
         let mode = meta.permissions().mode();
         if mode & 0o077 != 0 {
             return Err(ReadKeyError::Perms { mode: mode & 0o777 });
         }
     }
-    let mut raw = std::fs::read(path).map_err(ReadKeyError::Io)?;
+    // Read into a buffer sized up front and capped: a growing Vec would leave
+    // copies of the hex key in freed memory, and nothing bounds the file otherwise.
+    let mut raw = Vec::with_capacity(MAX_KEY_FILE + 1);
+    if let Err(e) = f.take(MAX_KEY_FILE as u64 + 1).read_to_end(&mut raw) {
+        wipe(&mut raw);
+        return Err(ReadKeyError::Io(e));
+    }
+    if raw.len() > MAX_KEY_FILE {
+        wipe(&mut raw);
+        return Err(ReadKeyError::Len);
+    }
     let text = match std::str::from_utf8(&raw) {
         Ok(t) => t,
         Err(_) => {
@@ -282,6 +309,22 @@ mod tests {
         std::fs::write(&tight, "not-hex\n").unwrap();
         std::fs::set_permissions(&tight, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert!(matches!(read_key_file(&tight), Err(ReadKeyError::Hex)));
+        // bounded: a huge file is refused, not read whole
+        std::fs::write(&tight, "a".repeat(MAX_KEY_FILE + 1)).unwrap();
+        assert!(matches!(read_key_file(&tight), Err(ReadKeyError::Len)));
+        std::fs::write(&tight, format!("{hex}\n")).unwrap();
+        assert!(read_key_file(&tight).is_ok());
+        // a directory is refused through the same handle
+        assert!(matches!(read_key_file(&dir), Err(ReadKeyError::Io(_))));
+        // a FIFO is refused at once, not waited on for a writer
+        let fifo = dir.join("fifo");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        // SAFETY: a valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert!(matches!(read_key_file(&fifo), Err(ReadKeyError::Io(_))));
+        // CRLF line endings are whitespace
+        std::fs::write(&tight, format!("{}\r\n{}\r\n", &hex[..32], &hex[32..])).unwrap();
+        assert!(read_key_file(&tight).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
