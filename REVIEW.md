@@ -38,22 +38,29 @@ Left unchanged. The measured image is `firmware/catwan-fw-v5.uf2` (sha256 in
 not done here. The module comment at `firmware/catwan-fw/src/main.rs:16` says so.
 README and HOWTO now say the same thing in the RF notes.
 
-### No replay window, and object 0 always opens a group. Deferred.
+### Replayed frames. Mostly fixed; long replays deferred.
 
-`ObjectSealer::open` (`moq-lora-wire/src/seal.rs`) decrypts any ciphertext whose salt,
-together with the cleartext group and object ids, matches the key. It does not
-remember which `(salt, group, obj)` values it has already accepted. Replayed object 0s
-from two older runs also push the live salt out of the receiver's two-entry cache, so
-the live run's objects fail as `auth_fail` until its next object 0.
-`Reassembler` (`moq-lora-wire/src/lib.rs:507`) remembers only the single object it just
-finished. `GroupGate::accept` (`moq-lora-wire/src/lib.rs:575`) treats every `obj == 0`
-as a fresh group and clears `broken`.
+`Reassembler` (`moq-lora-wire/src/lib.rs`) tracks the newest object it has placed.
+Frames for an object behind it are counted as `radio_frames_stale` and never
+reassembled, so a replayed old object 0 no longer reaches `GroupGate` as a new group
+and a replayed frame no longer finalizes the object in progress. A frame far ahead is
+held until the next frame continues from it, so one injected frame can't stall the
+stream. Measured: 17 replayed frames in a 30 s loopback run used to raise
+`objects_lost` from 15 to 60; now it stays at 15.
 
-An active attacker who recorded a valid object can replay it later. If it is object 0,
-the gate will hand it to the decoder as a new group. Integrity of the live picture
-fails open under replay; confidentiality and tag checks still hold. A replay bitmap
-would change what a lossy but honest link delivers (a late fragment of an earlier
-object can still complete today). Not changed.
+What remains:
+
+* A replay of `RECOVER_RUN` (32) or more consecutive old frames is followed, as the
+  way back after two forged frames confirm a wrong jump, so it can deliver old objects
+  again. With `--key-file` those still authenticate: `ObjectSealer::open` does not
+  remember which `(salt, group, obj)` it has accepted.
+* Replayed object 0s from two older runs push the live salt out of the receiver's
+  two-entry key cache, so the live run's objects fail as `auth_fail` until its next
+  object 0.
+* One forged frame just ahead (in its group, or an early object up to 2 groups on)
+  costs up to about 32 honest frames, about two GOPs.
+
+Closing these needs authenticated sequence numbers (see the next section).
 
 ### Radio headers and FEC are outside the AEAD. By design.
 
@@ -102,7 +109,7 @@ draws a 96-bit salt and encrypts under a subkey derived from the key and the sal
 the clear, other objects its first 4 bytes. The sender draws a new salt when the
 16-bit group id wraps. Reusing a keystream now needs two equal 96-bit salts. The
 receiver caches a salt's subkey only after an object under it authenticates, so a
-forged object 0 can't evict the real one (a replayed one can; see "No replay window").
+forged object 0 can't evict the real one (a replayed one can; see "Replayed frames").
 Until an object 0 authenticates, a receiver that joins mid-run counts the rest of that
 group as `auth_fail`, so that counter mixes "no key yet" with tampering. Frame `VERSION` is 4 for this format.
 

@@ -150,7 +150,7 @@ impl ObjectSealer {
             // A salt is cached only once an object under it authenticates, so a forged
             // object 0 can't push the real subkey out. A replayed object 0 from an older
             // run does authenticate; two of them evict the live salt until its next
-            // object 0. Replay is out of scope (REVIEW.md, "No replay window").
+            // object 0. Replay is out of scope (REVIEW.md, "Replayed frames").
             let fresh = !self.keys.iter().any(|(s, _)| *s == salt);
             let derived = fresh.then(|| self.derive(&salt));
             let key = match &derived {
