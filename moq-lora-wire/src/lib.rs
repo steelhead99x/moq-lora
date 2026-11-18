@@ -516,9 +516,11 @@ impl Partial {
 /// 300 kbit/s). A larger step moves the baseline only when the next frame continues from
 /// it, so one garbled, injected or replayed sequence number can't fake or hide loss.
 ///
-/// Sequence numbers are not authenticated, so this is not proof against an active
-/// injector: two consecutive forged frames far ahead are a confirmed gap. Closing that
-/// needs the frame header under the AEAD (`quest/m1/aead-headers.md`).
+/// Limits: sequence numbers are not authenticated, so two consecutive forged frames far
+/// ahead are a confirmed gap (closing that needs the frame header under the AEAD,
+/// `quest/m1/aead-headers.md`); and a 16-bit counter can't tell a frame more than 32768
+/// behind (about 4 minutes at 300 kbit/s) from one ahead, so consecutive replays that old
+/// count as a gap too.
 pub const SEQ_STEP: u16 = 64;
 
 /// How far behind the newest a frame counts as `late` (reordered or replayed) rather
@@ -532,13 +534,15 @@ pub struct Reassembler {
     cur: Option<Partial>,
     done: Option<(u16, u8)>,
     last_seq: Option<u16>,
-    /// A frame far from the baseline, waiting for the next frame to confirm it.
-    jump: Option<u16>,
+    /// The last two frames far ahead of the baseline, either of which a following frame
+    /// may confirm as a real gap; two, so one injected frame can't displace a real one.
+    jumps: [Option<u16>; 2],
     /// Before a baseline exists: the last two frames, either of which a following frame
     /// may confirm as the start.
     starts: [Option<u16>; 2],
     /// Frames that fit their object (`ok`) or contradicted it (`bad`). Every CRC-valid frame
-    /// lands in exactly one; `late` and `stray` frames are counted there as well.
+    /// that is not a duplicate lands in exactly one; `late` and `stray` frames are counted
+    /// there as well.
     pub frames_ok: u64,
     /// Sequence numbers skipped. Loss assumes in-order delivery, which the radio gives: a
     /// frame that arrives late was already counted missing when its gap was seen.
@@ -615,9 +619,9 @@ impl Reassembler {
             self.frames_dup += 1;
             return false;
         } else if d <= SEQ_STEP {
-            if self.jump.take().is_some() {
-                self.frames_stray += 1; // the next frame did not follow it
-            }
+            // the stream went on from the baseline: pending jumps were strays
+            self.frames_stray += self.jumps.iter().flatten().count() as u64;
+            self.jumps = [None, None];
             self.frames_missing += d as u64 - 1;
             self.last_seq = Some(seq);
         } else if d >= 0x8000 {
@@ -628,19 +632,32 @@ impl Reassembler {
                 self.frames_stray += 1;
             }
         } else {
-            match self.jump {
-                Some(j) if (1..=SEQ_STEP).contains(&seq.wrapping_sub(j)) => {
+            let follows = self
+                .jumps
+                .iter()
+                .flatten()
+                .copied()
+                .find(|&j| (1..=SEQ_STEP).contains(&seq.wrapping_sub(j)));
+            match follows {
+                Some(j) => {
                     // confirmed by a frame that follows it: a real gap up to the jump,
                     // and any frames between the jump and this one
                     self.frames_missing += j.wrapping_sub(last) as u64 - 1;
                     self.frames_missing += seq.wrapping_sub(j) as u64 - 1;
+                    self.frames_stray +=
+                        self.jumps.iter().flatten().filter(|&&x| x != j).count() as u64;
                     self.last_seq = Some(seq);
-                    self.jump = None;
+                    self.jumps = [None, None];
                 }
-                _ => {
-                    if self.jump.replace(seq).is_some() {
-                        self.frames_stray += 1;
+                None => {
+                    if self.jumps.contains(&Some(seq)) {
+                        self.frames_dup += 1;
+                        return false;
                     }
+                    if self.jumps[0].is_some() {
+                        self.frames_stray += 1; // the oldest was never followed
+                    }
+                    self.jumps = [self.jumps[1], Some(seq)];
                 }
             }
         }
@@ -1012,6 +1029,12 @@ mod tests {
         // at the start
         assert_eq!(account(&[0, 1000, 1, 2, 3]).frames_missing, 0);
         assert_eq!(account(&[3000, 3500, 0, 1, 2, 3]).frames_missing, 0);
+    }
+
+    #[test]
+    fn an_injection_while_a_real_gap_is_pending_changes_nothing() {
+        let r = account(&[0, 1, 200, 5000, 201, 202]);
+        assert_eq!((r.frames_missing, r.frames_stray), (198, 1));
     }
 
     #[test]
