@@ -308,6 +308,14 @@ fn main() -> Result<()> {
     if w == 0 || w % 40 != 0 || h % 2 != 0 || h < 64 {
         bail!("--size: width must be a non-zero multiple of 40, height even and at least 64");
     }
+    // The clock and counter overlay (two text rows, scale w/80) must fit above the barcode.
+    let need_h = 2 + 15 * (w / 80).max(1) + stamp::BAR_ROWS;
+    if h < need_h {
+        bail!(
+            "--size {}: too short for the clock overlay at this width (height must be >= {need_h})",
+            a.size
+        );
+    }
     let prof = parse_profile(&a.profile)?;
     let freq_hz = (a.freq * 1e6).round() as u32;
     let frame_toa_us =
@@ -467,8 +475,8 @@ fn main() -> Result<()> {
                 }
                 let t = unix_us();
                 let s = (w / 80).max(1);
-                stamp::draw_text(&mut buf, w, 2, 2, &local_clock(t), s);
-                stamp::draw_text(&mut buf, w, 2, 2 + 8 * s, &format!("{label}{n}"), s);
+                stamp::draw_text(&mut buf, w, h, 2, 2, &local_clock(t), s);
+                stamp::draw_text(&mut buf, w, h, 2, 2 + 8 * s, &format!("{label}{n}"), s);
                 stamp::write_barcode(&mut buf, w, h, (t / 1000) as u32);
                 caps.lock().unwrap().push_back((n, t));
                 if ein.write_all(&buf).is_err() {
