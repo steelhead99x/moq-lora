@@ -587,7 +587,17 @@ pub struct Reassembler {
     /// `newest` came from a frame released on idle with nothing confirming it, so a
     /// confirmed pair of frames anywhere may replace it.
     tentative: bool,
+    /// The last stale frame behind `newest`, and how many stale frames in a row have
+    /// each continued from the one before.
+    behind: Option<(u16, u8)>,
+    behind_run: u32,
 }
+
+/// Stale frames in a row, each continuing from the last, after which the receiver
+/// follows them: if two injected frames confirmed a jump to the wrong place, the real
+/// stream takes over again within this many frames (a few objects) instead of never.
+/// A replay shorter than this stays stale.
+pub const RECOVER_RUN: u32 = 32;
 
 /// Largest jump in group id a frame may make on its own. With [`OBJ_NEAR`], this bounds
 /// what one injected frame can cost to the rest of the current group and the next one
@@ -647,12 +657,26 @@ impl Reassembler {
         };
         match at {
             Pos::Same | Pos::Ahead => {
-                self.tentative = false;
+                (self.tentative, self.behind, self.behind_run) = (false, None, 0);
                 self.frames_stale += self.held.iter().flatten().count() as u64;
                 self.held = [None, None];
                 self.place_counted(h, pl, &mut ev);
             }
-            Pos::Behind => self.frames_stale += 1,
+            Pos::Behind => {
+                let continues = self
+                    .behind
+                    .is_some_and(|b| matches!(pos(b, key), Pos::Same | Pos::Ahead));
+                self.behind_run = if continues { self.behind_run + 1 } else { 1 };
+                self.behind = Some(key);
+                if self.behind_run >= RECOVER_RUN {
+                    (self.newest, self.behind, self.behind_run) = (None, None, 0);
+                    self.frames_stale += self.held.iter().flatten().count() as u64;
+                    self.held = [None, None];
+                    self.place_counted(h, pl, &mut ev);
+                } else {
+                    self.frames_stale += 1;
+                }
+            }
             Pos::FarAhead => {
                 let held_key = |f: &Vec<u8>| FrameHdr::decode(f).map(|(x, _)| (x.group, x.obj));
                 let confirms = self.held.iter().position(|f| {
@@ -1431,6 +1455,25 @@ mod tests {
             .collect();
         got.extend(delivered(&mut r, &frames[1..]));
         assert_eq!(got[1..], keys[..], "{got:?}");
+    }
+
+    #[test]
+    fn the_real_stream_takes_over_after_a_confirmed_wrong_jump() {
+        let keys: Vec<(u16, u8)> = (0..30u16)
+            .flat_map(|g| (0..3u8).map(move |o| (g, o)))
+            .collect();
+        let mut frames = objs(&keys);
+        frames.splice(7..7, objs(&[(40_000, 0), (40_000, 1)]));
+        let frames: Vec<Vec<u8>> = frames
+            .iter()
+            .enumerate()
+            .map(|(i, f)| with_seq(f, i as u16))
+            .collect();
+        let mut r = Reassembler::new();
+        let got = delivered(&mut r, &frames);
+        let lost = keys.iter().filter(|k| !got.contains(k)).count();
+        assert!(lost <= RECOVER_RUN as usize, "lost {lost}");
+        assert!(keys.iter().filter(|k| k.0 >= 15).all(|k| got.contains(k)));
     }
 
     #[test]
