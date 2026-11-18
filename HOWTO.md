@@ -138,7 +138,7 @@ The sender takes the usual knobs:
 | flag | default | notes |
 |---|---|---|
 | `--bitrate` | `180000` | x264 bitrate in bit/s |
-| `--gop` | `15` | keyframe interval, which is also the group length. A loss freezes until the next IDR, so a shorter GOP means shorter freezes but bigger bitrate spikes. |
+| `--gop` | `15` | keyframe interval, which is also the group length, 1 to 256 (a group's frames are numbered in one byte). A loss freezes until the next IDR, so a shorter GOP means shorter freezes but bigger bitrate spikes. |
 | `--fps` | `15` | |
 | `--size` | `320x240` | the width must be a multiple of 40, because the barcode is 20 blocks wide |
 | `--src` | `testsrc2` | any ffmpeg lavfi source, or a file (loops) or device path |
