@@ -53,15 +53,28 @@ fails open under replay; confidentiality and tag checks still hold. A replay bit
 would change what a lossy but honest link delivers (a late fragment of an earlier
 object can still complete today). Not changed.
 
-### Radio headers and FEC are outside the AEAD. Deferred.
+### Radio headers and FEC are outside the AEAD. By design.
 
-`moq-lora-wire/src/seal.rs:81` binds only `group` and `obj` as AAD. The nonce
-(`seal.rs:55`) is `session | group | obj | 0`. Sequence number, fragment index,
-`nfrag`, the parity bit, `k`, and `objlen` are clear and unauthenticated. An on-path
-attacker can drop, reorder, or retarget fragments. With the key, a modified object
-fails `open` and is counted as `auth_fail`. Without `--key-file`, the same attacker
-can inject Annex-B. Putting the header under the tag would change the wire format and
-the airtime of every object. Not changed. HOWTO already says the headers stay clear.
+`moq-lora-wire/src/seal.rs` binds only `group` and `obj` as AAD; the nonce is built
+from the run's id, `group` and `obj`. Sequence number, fragment index, `nfrag`, the parity bit,
+`k`, and `objlen` are clear and unauthenticated. What that lets an on-path attacker do,
+with `--key-file`:
+
+* Drop, reorder, or retarget fragments, or alter parity: the reassembled object then
+  fails `open` and is counted as `auth_fail`, a lost object. That is denial of service,
+  which jamming the channel achieves anyway.
+* Skew the loss statistics: with two or more consecutive forged frames far ahead it can
+  fake a gap (one frame can add at most `SEQ_STEP - 1`; see `moq-lora-wire/src/lib.rs`).
+  The video itself is unaffected.
+
+It cannot read the picture or make altered content authenticate: any change to how
+fragments reassemble changes the sealed bytes and fails the tag. It can replay recorded
+objects at their original position, which the previous section covers. The headers also
+show object sizes, so keyframe timing is visible. Authenticating the headers would cost a tag on
+every radio frame (16 bytes, about 6% of airtime, or 4 bytes truncated, about 1.6%) and
+a wire change, to protect only statistics. Decided 2026-11-18 (maintainer): keep the
+headers clear. Without `--key-file` nothing is authenticated and an attacker can inject
+Annex-B.
 
 ### `fsk_poll_long` can splice or reject a long packet. Deferred.
 
@@ -168,11 +181,12 @@ reverse path 4 s. Folding them together would be a new harness, not a cleanup.
 `moq-lora-wire/src/lib.rs` had both `pub mod seal` (AEAD) and `pub fn seal` (CRC-16).
 The CRC function is now `write_crc`, which says what it does.
 
-### The Pi GPIO glue is copied twice. Deferred.
+### The Pi GPIO glue was copied twice. Fixed.
 
-`moq-lora-send/src/radio.rs` and `moq-lora-recv/src/radio.rs` duplicate `CdevIrq` and
-`Radio::open`. The receiver's unused `send` method was removed. Merging the two
-modules risks the TX path. Not merged.
+`moq-lora-send/src/radio.rs` and `moq-lora-recv/src/radio.rs` duplicated `CdevIrq` and
+`Radio::open`. Both now come from `moq-lora-pi` (`CdevIrq`, `Hat`, `open_hat`, `sx_err`), moved verbatim:
+the same register writes in the same order. Each binary keeps only its own TX or RX
+methods, so the TX path is the code it was.
 
 ### `localtime_r` failure is ignored. Deferred.
 

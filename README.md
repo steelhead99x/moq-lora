@@ -120,6 +120,7 @@ Details in the [HOWTO](HOWTO.md#9-radio-rules).
 | `moq-lora-send` | sender: ffmpeg capture + x264, barcode, objects, radio TX |
 | `moq-lora-recv` | receiver: radio RX, reassembly, GOP gate, ffplay, recording, latency |
 | `moq-lora-wire` | the format: framing, FEC, Annex-B splitter, barcode, encryption |
+| `moq-lora-pi` | the Pi's radio HAT glue (SPI + GPIO), shared by sender and receiver |
 | `moq-lora-report` | turns run logs into the results table |
 | `firmware/catwan-fw` | Rust firmware for the USB stick, plus a prebuilt `.uf2` |
 | `vendor/sx1276` | `no_std` SX1276 radio driver |

@@ -534,8 +534,8 @@ impl Partial {
 /// at most `SEQ_STEP - 1` frames to it (a step that small looks like honest loss).
 ///
 /// Limits: sequence numbers are not authenticated, so two consecutive forged frames far
-/// ahead are a confirmed gap (closing that needs the frame header under the AEAD,
-/// `quest/m1/aead-headers.md`); and a 16-bit counter can't tell a frame more than 32768
+/// ahead are a confirmed gap (headers stay clear by design; see REVIEW.md, "Radio
+/// headers and FEC are outside the AEAD"); and a 16-bit counter can't tell a frame more than 32768
 /// behind (about 4 minutes at 300 kbit/s) from one ahead, so consecutive replays that old
 /// count as a gap too.
 pub const SEQ_STEP: u16 = 64;
@@ -901,7 +901,9 @@ pub const FRAME_EDGE_STEP: u32 = 8;
 /// a run changes nothing. The start needs a step of at most [`FRAME_EDGE_STEP`], and the
 /// last object counts if it is at most that far past the range: a wrong number right
 /// before the first or after the last real one can stretch the range by at most
-/// `FRAME_EDGE_STEP - 1`. A lone first object followed by a long outage is left out.
+/// `FRAME_EDGE_STEP`. Real objects more than that apart at either edge (a lone first or
+/// last object beside an outage) are left out, which can understate loss, never
+/// overstate it.
 #[derive(Default)]
 pub struct FrameRange {
     first: Option<u32>,
@@ -1580,7 +1582,8 @@ mod tests {
         // before the first real frame: rejected, or at most FRAME_EDGE_STEP - 1 extra
         assert_eq!(range(&[0, 100, 101, 102]).expected(), 3);
         assert_eq!(range(&[200, 300, 301, 302]).expected(), 3);
-        assert!(range(&[95, 100, 101, 102]).expected() < 3 + FRAME_EDGE_STEP as u64);
+        assert!(range(&[92, 100, 101, 102]).expected() <= 3 + FRAME_EDGE_STEP as u64);
+        assert!(range(&[0, 1, 2, 10]).expected() <= 3 + FRAME_EDGE_STEP as u64);
         // after the last real frame
         let r = range(&[0, 1, 2, 3, 200]);
         assert_eq!((r.expected(), r.contains(200)), (4, false));
