@@ -427,12 +427,13 @@ fn advance(group: u16, obj: u8, key: bool) -> Option<(u16, u8)> {
     }
 }
 
-fn random_u32() -> u32 {
-    let mut b = [0u8; 4];
+/// A fresh random salt for the run's encryption subkey.
+fn random_salt() -> [u8; seal::SALT_LEN] {
+    let mut b = [0u8; seal::SALT_LEN];
     std::fs::File::open("/dev/urandom")
         .and_then(|mut f| f.read_exact(&mut b))
         .expect("/dev/urandom");
-    u32::from_be_bytes(b)
+    b
 }
 
 #[allow(deprecated)]
@@ -786,14 +787,17 @@ fn main() -> Result<()> {
         .map(std::fs::File::create)
         .transpose()?
         .map(std::io::BufWriter::new);
-    let sealer = match &a.key_file {
+    let mut sealer = match &a.key_file {
         Some(kf) => {
             let c = seal::Cipher::parse(&a.cipher).context("--cipher")?;
             Some(seal::open_sealer(std::path::Path::new(kf), c).map_err(|e| anyhow::anyhow!(e))?)
         }
         None => None,
     };
-    let mut session = random_u32();
+    let mut salt = random_salt();
+    let mut aead_bytes = 0u64;
+    let mut sealed = 0u64; // objects sealed in total
+    let mut salt_used = false; // anything sealed under the current salt
     let (mut last_frame_no, mut uncaptured) = (0u32, 0u64);
     let mut gop_overrun = false;
     let mut seal_s = 0f64;
@@ -830,9 +834,10 @@ fn main() -> Result<()> {
                 return Ok(());
             };
             if key {
-                if g == 0 && objects > 0 {
-                    // nonces stay unique across a group-id wrap, including a repeated draw
-                    session = seal::session_after_wrap(session, random_u32());
+                if g == 0 && salt_used {
+                    // nonces repeat once the group id wraps, so take a new subkey
+                    salt = random_salt();
+                    salt_used = false;
                 }
                 keys += 1;
             }
@@ -845,10 +850,14 @@ fn main() -> Result<()> {
             };
             let mut data = oh.encode().to_vec();
             data.extend_from_slice(&au);
-            if let Some(sl) = &sealer {
+            if let Some(sl) = sealer.as_mut() {
                 let t = Instant::now();
-                data = sl.seal(session, group, obj, &data);
+                let plain_len = data.len();
+                data = sl.seal(&salt, group, obj, &data);
                 seal_s += t.elapsed().as_secs_f64();
+                aead_bytes += (data.len() - plain_len) as u64;
+                sealed += 1;
+                salt_used = true;
             }
             obj_bytes += data.len() as u64;
             let frames = match frag.fragment(group, obj, &data) {
@@ -946,16 +955,16 @@ fn main() -> Result<()> {
     let (cpu_self, cpu_child) = (cpu_s(libc::RUSAGE_SELF), cpu_s(libc::RUSAGE_CHILDREN));
     let objs = objects.max(1) as f64;
     println!(
-        "{{\"role\":\"send\",\"profile\":\"{}\",\"freq_hz\":{freq_hz},\"power_dbm\":{},\"size\":\"{}\",\"fps\":{},\"gop\":{},\"encoder\":\"{}\",\"bitrate_target\":{},\"fec_k\":{},\"min_frame\":{},\"wall_s\":{wall:.2},\"captured\":{captured},\"objects\":{objects},\"keyframes\":{keys},\"video_bps\":{:.0},\"frames_tx\":{},\"bytes_tx\":{},\"radio_busy_pct\":{:.1},\"air_bps\":{:.0},\"objects_dropped\":{},\"groups_dropped\":{},\"tx_errors\":{},\"max_queue_frames\":{},\"queue_cap_frames\":{queue_cap},\"objects_dropped_queue_full\":{},\"groups_dropped_queue_full\":{},\"cipher\":\"{}\",\"au_bytes\":{au_bytes},\"object_bytes\":{obj_bytes},\"overhead_per_object\":{{\"objhdr\":{},\"aead\":{},\"frame_headers_crc\":{:.1},\"padding_parity\":{:.1},\"total_air\":{:.1}}},\"seal_us_per_object\":{:.1},\"cpu_pct_sender\":{:.1},\"cpu_pct_ffmpeg\":{:.1},\"cpu_pct_total\":{:.1},\"cpu_cores\":{},\"link\":\"{}\",\"tx_fatal\":{tx_fatal},\"encoder_ok\":{enc_ok},\"source_stalled\":{source_stalled},\"aus_without_capture\":{uncaptured},\"gop_overrun\":{gop_overrun}}}",
+        "{{\"role\":\"send\",\"profile\":\"{}\",\"freq_hz\":{freq_hz},\"power_dbm\":{},\"size\":\"{}\",\"fps\":{},\"gop\":{},\"encoder\":\"{}\",\"bitrate_target\":{},\"fec_k\":{},\"min_frame\":{},\"wall_s\":{wall:.2},\"captured\":{captured},\"objects\":{objects},\"keyframes\":{keys},\"video_bps\":{:.0},\"frames_tx\":{},\"bytes_tx\":{},\"radio_busy_pct\":{:.1},\"air_bps\":{:.0},\"objects_dropped\":{},\"groups_dropped\":{},\"tx_errors\":{},\"max_queue_frames\":{},\"queue_cap_frames\":{queue_cap},\"objects_dropped_queue_full\":{},\"groups_dropped_queue_full\":{},\"cipher\":\"{}\",\"au_bytes\":{au_bytes},\"object_bytes\":{obj_bytes},\"overhead_per_object\":{{\"objhdr\":{},\"aead\":{:.1},\"frame_headers_crc\":{:.1},\"padding_parity\":{:.1},\"total_air\":{:.1}}},\"seal_us_per_object\":{:.1},\"cpu_pct_sender\":{:.1},\"cpu_pct_ffmpeg\":{:.1},\"cpu_pct_total\":{:.1},\"cpu_cores\":{},\"link\":\"{}\",\"tx_fatal\":{tx_fatal},\"encoder_ok\":{enc_ok},\"source_stalled\":{source_stalled},\"aus_without_capture\":{uncaptured},\"gop_overrun\":{gop_overrun}}}",
         a.profile, a.power, a.size, a.fps, a.gop, a.encoder, a.bitrate, a.fec_k, a.min_frame, au_bytes as f64 * 8.0 / wall, st.frames, st.bytes,
         100.0 * busy / wall, st.bytes as f64 * 8.0 / wall, st.objects_dropped, st.groups_dropped, st.tx_errors, st.max_queue_frames, qdrops.objects, qdrops.groups,
         sealer.as_ref().map(|x| x.cipher.name()).unwrap_or("none"),
         moq_lora_wire::OBJ_HDR_LEN,
-        if sealer.is_some() { seal::OVERHEAD } else { 0 },
+        aead_bytes as f64 / sealed.max(1) as f64,
         st.frames as f64 * moq_lora_wire::HDR_LEN as f64 / objs,
         (st.bytes as f64 - st.frames as f64 * moq_lora_wire::HDR_LEN as f64 - obj_bytes as f64) / objs,
         (st.bytes as f64 - au_bytes as f64) / objs,
-        1e6 * seal_s / objs,
+        1e6 * seal_s / sealed.max(1) as f64,
         100.0 * cpu_self / wall, 100.0 * cpu_child / wall, 100.0 * (cpu_self + cpu_child) / wall,
         std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
         if a.loopback.is_some() { "loopback" } else if a.catwan.is_some() { "catwan" } else { "sx1276" }
