@@ -145,21 +145,29 @@ impl Sink {
     /// Close the input, wait for the child, and return how many AUs it never got:
     /// refused by a full channel, or failed to write once the child stopped reading.
     fn close(&mut self, kill_after: Duration) -> u64 {
+        // Close the input, give the child `kill_after` to finish, then kill it, and only
+        // then join the writer: a child that stopped reading leaves the writer blocked on
+        // a full pipe until the child is gone.
         self.tx.take();
-        let mut dropped = self.refused.get();
-        if let Some(t) = self.th.take() {
-            dropped += t.join().unwrap_or(0);
-        }
         if let Some(mut c) = self.child.take() {
             let t0 = Instant::now();
-            while t0.elapsed() < kill_after {
-                if let Ok(Some(_)) = c.try_wait() {
-                    return dropped;
+            while !matches!(c.try_wait(), Ok(Some(_))) {
+                if t0.elapsed() >= kill_after {
+                    let _ = c.kill();
+                    let _ = c.wait();
+                    break;
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-            let _ = c.kill();
-            let _ = c.wait();
+        }
+        let mut dropped = self.refused.get();
+        if let Some(t) = self.th.take() {
+            match t.join() {
+                Ok(n) => dropped += n,
+                Err(_) => {
+                    eprintln!("a sink's writer thread panicked; its drop count is incomplete")
+                }
+            }
         }
         dropped
     }
@@ -283,6 +291,10 @@ fn main() -> Result<()> {
     }
     if !(902.0..=928.0).contains(&a.freq) || (a.freq - 925.0).abs() < 0.3 {
         bail!("--freq must be inside 902-928 MHz and not 925.0");
+    }
+    // Both are printed into summary.json as numbers; NaN or infinity would make it invalid.
+    if !a.clock_offset_ms.is_finite() || !(a.stall_ms.is_finite() && a.stall_ms > 0.0) {
+        bail!("--clock-offset-ms must be finite and --stall-ms finite and positive");
     }
     let (w, h): (usize, usize) = {
         let (x, y) = a.size.split_once('x').context("--size WxH")?;
@@ -685,7 +697,9 @@ fn main() -> Result<()> {
         }
     }
     if let Some(mut wr) = port_w.filter(|_| !port_closed) {
-        let _ = wr.write_all(b"S\n");
+        if let Err(e) = wr.write_all(b"S\n") {
+            eprintln!("stopping the CatWAN failed: {e}");
+        }
         let t = Instant::now();
         while t.elapsed() < Duration::from_secs(2) {
             if let Ok((_, l)) = lrx.recv_timeout(Duration::from_millis(100)) {
@@ -771,7 +785,41 @@ fn cpu_s(who: i32) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{jnum, json_escape};
+    use super::{jnum, json_escape, Sink};
+    use std::process::{Command, Stdio};
+    use std::time::Duration;
+
+    fn child(cmd: &str, args: &[&str]) -> Sink {
+        let mut c = Command::new(cmd)
+            .args(args)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let si = c.stdin.take().unwrap();
+        Sink::new(si, Some(c))
+    }
+
+    #[test]
+    fn sink_counts_aus_a_stalled_child_never_got() {
+        // `sleep` never reads: the pipe fills, then the 256-deep channel, then sends are refused
+        let mut s = child("sleep", &["10"]);
+        let au = vec![0u8; 100_000];
+        for _ in 0..300 {
+            s.send(&au);
+        }
+        let dropped = s.close(Duration::from_millis(100));
+        assert!(dropped >= 300 - 256 - 2, "{dropped}");
+    }
+
+    #[test]
+    fn sink_counts_writes_to_a_child_that_exited() {
+        let mut s = child("true", &[]);
+        std::thread::sleep(Duration::from_millis(200)); // let it exit
+        for _ in 0..10 {
+            s.send(b"au");
+        }
+        assert_eq!(s.close(Duration::from_millis(100)), 10);
+    }
 
     #[test]
     fn jnum_writes_null_for_missing_values() {
