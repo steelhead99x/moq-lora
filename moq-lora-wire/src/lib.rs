@@ -52,7 +52,12 @@ pub fn read_line_limited(
     let mut buf = Vec::new();
     let mut skipping = false;
     loop {
-        let available = r.fill_buf()?;
+        let available = match r.fill_buf() {
+            Ok(a) => a,
+            // a signal, not an error: std's `read_line` retries too
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
         if available.is_empty() {
             if skipping || buf.is_empty() {
                 return Ok(None);
@@ -100,9 +105,13 @@ pub fn decode_hex(s: &str) -> Option<Vec<u8>> {
     if !b.len().is_multiple_of(2) {
         return None;
     }
-    b.chunks_exact(2)
-        .map(|p| Some(val(p[0])? << 4 | val(p[1])?))
-        .collect()
+    // Sized up front: this also decodes key files, and a growing Vec would leave
+    // copies of the key in freed memory.
+    let mut out = Vec::with_capacity(b.len() / 2);
+    for p in b.chunks_exact(2) {
+        out.push(val(p[0])? << 4 | val(p[1])?);
+    }
+    Some(out)
 }
 
 /// One received frame as reported by the CatWAN firmware, the Pi receiver thread or
@@ -977,6 +986,27 @@ mod tests {
         assert_eq!(
             read_line_limited(&mut input, 16).unwrap(),
             Some(Line::Data(b"next\n".to_vec()))
+        );
+
+        // A signal during a read is retried, not reported as an error.
+        struct Eintr(u8);
+        impl std::io::Read for Eintr {
+            fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+                self.0 += 1;
+                match self.0 {
+                    1 => Err(std::io::ErrorKind::Interrupted.into()),
+                    2 => {
+                        b[..3].copy_from_slice(b"ok\n");
+                        Ok(3)
+                    }
+                    _ => Ok(0),
+                }
+            }
+        }
+        let mut input = std::io::BufReader::new(Eintr(0));
+        assert_eq!(
+            read_line_limited(&mut input, 8).unwrap(),
+            Some(Line::Data(b"ok\n".to_vec()))
         );
 
         // No newline, and longer than the cap: do not return the bytes.

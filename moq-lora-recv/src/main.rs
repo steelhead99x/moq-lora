@@ -188,6 +188,16 @@ fn json_escape(s: &str) -> String {
     o
 }
 
+/// A JSON number, or `null` when there is no value. An empty latency list gives NaN,
+/// which JSON cannot carry (a run without `--decode` used to write invalid JSON).
+fn jnum(x: f64) -> String {
+    if x.is_finite() {
+        format!("{x:.1}")
+    } else {
+        "null".into()
+    }
+}
+
 fn pct(v: &mut [f64], p: f64) -> f64 {
     if v.is_empty() {
         return f64::NAN;
@@ -200,7 +210,7 @@ fn stalls(times_us: &[u64], thr_ms: f64) -> (u32, f64) {
     let mut n = 0;
     let mut worst = 0f64;
     for w in times_us.windows(2) {
-        let g = (w[1] - w[0]) as f64 / 1000.0;
+        let g = w[1].saturating_sub(w[0]) as f64 / 1000.0;
         worst = worst.max(g);
         if g > thr_ms {
             n += 1;
@@ -267,6 +277,11 @@ fn main() -> Result<()> {
         let (x, y) = a.size.split_once('x').context("--size WxH")?;
         (x.parse()?, y.parse()?)
     };
+    // read_barcode needs blocks at least 2 px wide and the full bar height; a zero
+    // size used to spin the decode thread forever on an empty read.
+    if w < 40 || h < stamp::BAR_ROWS {
+        bail!("--size must be at least 40x{}", stamp::BAR_ROWS);
+    }
     std::fs::create_dir_all(&a.out)?;
     let prof = parse_fsk_profile(&a.profile).map_err(|e| anyhow::anyhow!(e))?;
     let (br, fdev, pre, unchecked) = (prof.bitrate, prof.fdev, prof.preamble, prof.unchecked);
@@ -597,6 +612,7 @@ fn main() -> Result<()> {
         }
         Ok(())
     };
+    let mut port_closed = false;
     while t0.elapsed().as_secs_f64() < a.secs {
         match lrx.recv_timeout(Duration::from_millis(20)) {
             Ok((t, l)) => {
@@ -634,10 +650,12 @@ fn main() -> Result<()> {
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                if a.replay.is_some() {
-                    break;
+                if a.replay.is_none() {
+                    // Keep what we have: write the summary, then exit non-zero.
+                    eprintln!("serial port closed, stopping");
+                    port_closed = true;
                 }
-                bail!("serial port closed");
+                break;
             }
         }
         if last_rx.elapsed() > Duration::from_millis(150) {
@@ -660,8 +678,8 @@ fn main() -> Result<()> {
             std::thread::sleep(Duration::from_millis(5));
         }
     }
-    if let Some(mut wr) = port_w {
-        wr.write_all(b"S\n")?;
+    if let Some(mut wr) = port_w.filter(|_| !port_closed) {
+        let _ = wr.write_all(b"S\n");
         let t = Instant::now();
         while t.elapsed() < Duration::from_secs(2) {
             if let Ok((_, l)) = lrx.recv_timeout(Duration::from_millis(100)) {
@@ -696,7 +714,7 @@ fn main() -> Result<()> {
         .saturating_add(1_000_000);
     let flushed = dtimes.iter().filter(|&&t| t > cutoff).count();
     dtimes.retain(|&t| t <= cutoff);
-    let mut dlat: Vec<f64> = dlat_t
+    let dlat: Vec<f64> = dlat_t
         .iter()
         .filter(|(t, _)| *t <= cutoff)
         .map(|x| x.1)
@@ -710,16 +728,16 @@ fn main() -> Result<()> {
     let (dst, dworst) = stalls(&dtimes, a.stall_ms);
     let frames_expected = last_frame_no.saturating_sub(first_frame_no.unwrap_or(0)) as u64 + 1;
     let s = format!(
-        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"video_frame_loss\":{:.5},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{:.1},\"p95\":{:.1},\"max\":{:.1}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{:.1},\"p95\":{:.1},\"max\":{:.1}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{:.1},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"catwan\":\"{}\",\"decoded_flushed_at_end\":{flushed},\"cpu_pct_recv\":{:.1},\"cpu_pct_children\":{:.1},\"cpu_cores\":{}}}",
+        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"video_frame_loss\":{:.5},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"catwan\":\"{}\",\"decoded_flushed_at_end\":{flushed},\"cpu_pct_recv\":{:.1},\"cpu_pct_children\":{:.1},\"cpu_cores\":{},\"port_closed\":{port_closed}}}",
         a.profile, re.frames_ok, re.frames_missing, re.frames_bad,
         re.frames_missing as f64 / (re.frames_ok + re.frames_missing).max(1) as f64,
         re.fec_recovered, obj_times.len(),
         1.0 - obj_times.len() as f64 / frames_expected.max(1) as f64,
         gate.groups_cut, gate.objects_skipped,
         delivered_bytes as f64 * 8.0 / span.max(1e-9), au_bytes_all as f64 * 8.0 / span.max(1e-9),
-        pct(&mut obj_lat.clone(), 0.5), pct(&mut obj_lat.clone(), 0.95), obj_lat.iter().cloned().fold(f64::NAN, f64::max),
-        dtimes.len(), pct(&mut dlat.clone(), 0.5), pct(&mut dlat.clone(), 0.95), dlat.iter_mut().map(|x| *x).fold(f64::NAN, f64::max),
-        a.stall_ms, rssi.iter().sum::<f64>() / rssi.len().max(1) as f64, a.clock_offset_ms,
+        jnum(pct(&mut obj_lat.clone(), 0.5)), jnum(pct(&mut obj_lat.clone(), 0.95)), jnum(obj_lat.iter().cloned().fold(f64::NAN, f64::max)),
+        dtimes.len(), jnum(pct(&mut dlat.clone(), 0.5)), jnum(pct(&mut dlat.clone(), 0.95)), jnum(dlat.iter().copied().fold(f64::NAN, f64::max)),
+        a.stall_ms, jnum(if rssi.is_empty() { f64::NAN } else { rssi.iter().sum::<f64>() / rssi.len() as f64 }), a.clock_offset_ms,
         sealer.as_ref().map(|x| x.cipher.name()).unwrap_or("none"),
         1e6 * open_s / ok_objs.max(1) as f64,
         rx_bytes as f64 * 8.0 / span.max(1e-9),
@@ -729,6 +747,9 @@ fn main() -> Result<()> {
     );
     std::fs::write(format!("{}/summary.json", a.out), &s)?;
     println!("{s}");
+    if port_closed {
+        std::process::exit(1);
+    }
     Ok(())
 }
 
@@ -743,7 +764,14 @@ fn cpu_s(who: i32) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::json_escape;
+    use super::{jnum, json_escape};
+
+    #[test]
+    fn jnum_writes_null_for_missing_values() {
+        assert_eq!(jnum(12.34), "12.3");
+        assert_eq!(jnum(f64::NAN), "null");
+        assert_eq!(jnum(f64::INFINITY), "null");
+    }
 
     #[test]
     fn json_escape_leaves_stats_and_quotes() {

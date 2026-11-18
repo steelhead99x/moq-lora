@@ -17,7 +17,7 @@ use moq_lora_wire::{
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -109,8 +109,13 @@ enum Link {
         t0: Instant,
     },
     /// CatWAN USB CDC: `Q <hex>` per frame; the firmware stops reading USB while its
-    /// 12-frame TX queue is full, so writes block = natural backpressure.
-    Catwan { w: std::fs::File },
+    /// 12-frame TX queue is full, so writes block = natural backpressure. `errs` counts
+    /// the stick's `ERR tx` / `ERR txtimeout` lines; `seen` is how many were reported.
+    Catwan {
+        w: std::fs::File,
+        errs: Arc<AtomicU64>,
+        seen: u64,
+    },
 }
 
 fn open_serial(path: &str) -> Result<std::fs::File> {
@@ -136,17 +141,20 @@ fn open_serial(path: &str) -> Result<std::fs::File> {
     Ok(f)
 }
 
-/// Configure the CatWAN for FSK TX; returns the write half. A reader thread drains the
-/// stick's replies (B/D/ERR lines) so its output buffer never fills.
+/// Configure the CatWAN for FSK TX; returns the write half and a counter of the TX
+/// errors the stick reports. A reader thread drains the stick's replies (B/D/ERR lines)
+/// so its output buffer never fills.
 fn open_catwan(
     port: &str,
     freq_hz: u32,
     p: &moq_lora_wire::FskProfile,
     power: i8,
-) -> Result<std::fs::File> {
+) -> Result<(std::fs::File, Arc<AtomicU64>)> {
     let f = open_serial(port)?;
     let mut w = f.try_clone()?;
     let (tx, rx) = mpsc::channel::<String>();
+    let errs = Arc::new(AtomicU64::new(0));
+    let errs_rd = errs.clone();
     std::thread::spawn(move || {
         let mut r = std::io::BufReader::new(f);
         while let Ok(Some(line)) = read_line_limited(&mut r, MAX_SERIAL_LINE) {
@@ -154,6 +162,9 @@ fn open_catwan(
                 continue; // oversize reply is not a config response
             };
             let l = String::from_utf8_lossy(&buf);
+            if l.starts_with("ERR tx") {
+                errs_rd.fetch_add(1, Ordering::Relaxed);
+            }
             if tx.send(l.trim().to_string()).is_err() {
                 // keep draining after setup
             }
@@ -183,14 +194,28 @@ fn open_catwan(
         bail!("CatWAN config error: {r}");
     }
     eprintln!("CatWAN TX ready: {r}");
-    Ok(w)
+    Ok((w, errs))
 }
 impl Link {
+    /// TX errors the CatWAN reported since the last call. They arrive asynchronously,
+    /// after the packet they belong to was queued. Always 0 for the other links.
+    fn take_stick_errors(&mut self) -> u64 {
+        match self {
+            Link::Catwan { errs, seen, .. } => {
+                let now = errs.load(Ordering::Relaxed);
+                let n = now - *seen;
+                *seen = now;
+                n
+            }
+            _ => 0,
+        }
+    }
+
     fn send(&mut self, fr: &[u8]) -> Result<()> {
         match self {
             #[cfg(target_os = "linux")]
             Link::Radio(r) => r.send(fr),
-            Link::Catwan { w } => {
+            Link::Catwan { w, .. } => {
                 let mut l = Vec::with_capacity(4 + 2 * fr.len());
                 l.extend_from_slice(b"Q ");
                 for b in fr {
@@ -283,6 +308,14 @@ fn main() -> Result<()> {
     if w == 0 || w % 40 != 0 || h % 2 != 0 || h < 64 {
         bail!("--size: width must be a non-zero multiple of 40, height even and at least 64");
     }
+    // The clock and counter overlay (two text rows, scale w/80) must fit above the barcode.
+    let need_h = 2 + 15 * (w / 80).max(1) + stamp::BAR_ROWS;
+    if h < need_h {
+        bail!(
+            "--size {}: too short for the clock overlay at this width (height must be >= {need_h})",
+            a.size
+        );
+    }
     let prof = parse_profile(&a.profile)?;
     let freq_hz = (a.freq * 1e6).round() as u32;
     let frame_toa_us =
@@ -293,9 +326,8 @@ fn main() -> Result<()> {
             if !a.i_have_an_antenna {
                 bail!("refusing to transmit without --i-have-an-antenna");
             }
-            Link::Catwan {
-                w: open_catwan(a.catwan.as_ref().unwrap(), freq_hz, &prof, a.power)?,
-            }
+            let (w, errs) = open_catwan(a.catwan.as_ref().unwrap(), freq_hz, &prof, a.power)?;
+            Link::Catwan { w, errs, seen: 0 }
         }
         Some(p) => Link::Loop {
             f: std::io::BufWriter::new(std::fs::File::create(p)?),
@@ -441,8 +473,8 @@ fn main() -> Result<()> {
                 }
                 let t = unix_us();
                 let s = (w / 80).max(1);
-                stamp::draw_text(&mut buf, w, 2, 2, &local_clock(t), s);
-                stamp::draw_text(&mut buf, w, 2, 2 + 8 * s, &format!("{label}{n}"), s);
+                stamp::draw_text(&mut buf, w, h, 2, 2, &local_clock(t), s);
+                stamp::draw_text(&mut buf, w, h, 2, 2 + 8 * s, &format!("{label}{n}"), s);
                 stamp::write_barcode(&mut buf, w, h, (t / 1000) as u32);
                 caps.lock().unwrap().push_back((n, t));
                 if ein.write_all(&buf).is_err() {
@@ -517,17 +549,22 @@ fn main() -> Result<()> {
                 };
                 let Some(f) = fr else { break };
                 let t = Instant::now();
+                let mut errs = link.take_stick_errors();
+                if errs > 0 {
+                    eprintln!("tx error: CatWAN reported {errs}");
+                }
                 if let Err(e) = link.send(&f) {
-                    st.tx_errors += 1;
+                    errs += 1;
                     eprintln!("tx error: {e}");
-                    if st.tx_errors > 20 {
-                        // Give up, but let the run wind down and print its summary:
-                        // stopping capture closes the encoder, which ends the main loop.
-                        eprintln!("too many TX errors, stopping");
-                        fatal = true;
-                        stop.store(true, Ordering::Relaxed);
-                        break;
-                    }
+                }
+                st.tx_errors += errs;
+                if errs > 0 && st.tx_errors > 20 {
+                    // Give up, but let the run wind down and print its summary:
+                    // stopping capture closes the encoder, which ends the main loop.
+                    eprintln!("too many TX errors, stopping");
+                    fatal = true;
+                    stop.store(true, Ordering::Relaxed);
+                    break;
                 }
                 busy += t.elapsed();
                 st.frames += 1;
@@ -641,9 +678,12 @@ fn main() -> Result<()> {
     let captured = cap_thread.join().unwrap().unwrap_or(0);
     let _ = src.kill();
     let _ = src.wait();
-    let _ = enc.wait();
+    // The source is killed on purpose, so its exit status says nothing; a source that
+    // never produced a frame shows up as `captured == 0`. The encoder exits on its own
+    // once its input closes, so a failure there is real.
+    let enc_ok = enc.wait().map(|s| s.success()).unwrap_or(false);
     let _ = rd_thread.join();
-    let (st, mut link, busy, tx_fatal) = tx_thread.join().unwrap();
+    let (mut st, mut link, busy, tx_fatal) = tx_thread.join().unwrap();
     #[cfg(target_os = "linux")]
     if let Link::Radio(r) = &mut link {
         r.idle();
@@ -651,15 +691,16 @@ fn main() -> Result<()> {
     if let Link::Loop { f, .. } = &mut link {
         f.flush()?;
     }
-    if let Link::Catwan { w } = &mut link {
+    if let Link::Catwan { w, .. } = &mut link {
         std::thread::sleep(Duration::from_millis(300)); // let the stick drain its queue
         let _ = w.write_all(b"S\n");
     }
+    st.tx_errors += link.take_stick_errors();
     drop(log);
     let (cpu_self, cpu_child) = (cpu_s(libc::RUSAGE_SELF), cpu_s(libc::RUSAGE_CHILDREN));
     let objs = objects.max(1) as f64;
     println!(
-        "{{\"role\":\"send\",\"profile\":\"{}\",\"freq_hz\":{freq_hz},\"power_dbm\":{},\"size\":\"{}\",\"fps\":{},\"gop\":{},\"encoder\":\"{}\",\"bitrate_target\":{},\"fec_k\":{},\"min_frame\":{},\"wall_s\":{wall:.2},\"captured\":{captured},\"objects\":{objects},\"keyframes\":{keys},\"video_bps\":{:.0},\"frames_tx\":{},\"bytes_tx\":{},\"radio_busy_pct\":{:.1},\"air_bps\":{:.0},\"objects_dropped\":{},\"groups_dropped\":{},\"tx_errors\":{},\"max_queue_frames\":{},\"cipher\":\"{}\",\"au_bytes\":{au_bytes},\"object_bytes\":{obj_bytes},\"overhead_per_object\":{{\"objhdr\":{},\"aead\":{},\"frame_headers_crc\":{:.1},\"padding_parity\":{:.1},\"total_air\":{:.1}}},\"seal_us_per_object\":{:.1},\"cpu_pct_sender\":{:.1},\"cpu_pct_ffmpeg\":{:.1},\"cpu_pct_total\":{:.1},\"cpu_cores\":{},\"link\":\"{}\",\"tx_fatal\":{tx_fatal}}}",
+        "{{\"role\":\"send\",\"profile\":\"{}\",\"freq_hz\":{freq_hz},\"power_dbm\":{},\"size\":\"{}\",\"fps\":{},\"gop\":{},\"encoder\":\"{}\",\"bitrate_target\":{},\"fec_k\":{},\"min_frame\":{},\"wall_s\":{wall:.2},\"captured\":{captured},\"objects\":{objects},\"keyframes\":{keys},\"video_bps\":{:.0},\"frames_tx\":{},\"bytes_tx\":{},\"radio_busy_pct\":{:.1},\"air_bps\":{:.0},\"objects_dropped\":{},\"groups_dropped\":{},\"tx_errors\":{},\"max_queue_frames\":{},\"cipher\":\"{}\",\"au_bytes\":{au_bytes},\"object_bytes\":{obj_bytes},\"overhead_per_object\":{{\"objhdr\":{},\"aead\":{},\"frame_headers_crc\":{:.1},\"padding_parity\":{:.1},\"total_air\":{:.1}}},\"seal_us_per_object\":{:.1},\"cpu_pct_sender\":{:.1},\"cpu_pct_ffmpeg\":{:.1},\"cpu_pct_total\":{:.1},\"cpu_cores\":{},\"link\":\"{}\",\"tx_fatal\":{tx_fatal},\"encoder_ok\":{enc_ok}}}",
         a.profile, a.power, a.size, a.fps, a.gop, a.encoder, a.bitrate, a.fec_k, a.min_frame, au_bytes as f64 * 8.0 / wall, st.frames, st.bytes,
         100.0 * busy / wall, st.bytes as f64 * 8.0 / wall, st.objects_dropped, st.groups_dropped, st.tx_errors, st.max_queue_frames,
         sealer.as_ref().map(|x| x.cipher.name()).unwrap_or("none"),
@@ -673,9 +714,10 @@ fn main() -> Result<()> {
         std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
         if a.loopback.is_some() { "loopback" } else if a.catwan.is_some() { "catwan" } else { "sx1276" }
     );
-    if tx_fatal {
+    if tx_fatal || captured == 0 || !enc_ok {
         // The summary above is the last line on stdout (the harness reads it with
         // `tail -1`); report the failure through the exit status only.
+        eprintln!("run failed: tx_fatal={tx_fatal} captured={captured} encoder_ok={enc_ok}");
         std::process::exit(1);
     }
     Ok(())

@@ -50,7 +50,7 @@ fn stalls(t: &[u64], thr_ms: f64) -> (u32, f64) {
     let mut n = 0;
     let mut worst = 0f64;
     for w in t.windows(2) {
-        let g = (w[1] - w[0]) as f64 / 1000.0;
+        let g = w[1].saturating_sub(w[0]) as f64 / 1000.0;
         worst = worst.max(g);
         if g > thr_ms {
             n += 1;
@@ -127,15 +127,25 @@ fn main() -> Result<()> {
             .max()
             .unwrap_or(u64::MAX);
         let cutoff = last_obj.saturating_add(1_000_000);
-        let reverse = s["link"].as_str() == Some("catwan")
-            || r["cpu_pct_recv"].is_number() && s["cpu_pct_total"].as_f64().unwrap_or(0.0) < 30.0;
+        // Senders since 65140d4 write `link`; the CPU guess is only for the older
+        // summaries in results/video, which predate it (a low-CPU forward run, such as
+        // one with the hardware encoder, would otherwise be labelled reverse).
+        let reverse = match s["link"].as_str() {
+            Some(l) => l == "catwan",
+            None => {
+                r["cpu_pct_recv"].is_number() && s["cpu_pct_total"].as_f64().unwrap_or(0.0) < 30.0
+            }
+        };
         let used = r["clock_offset_ms"].as_f64().unwrap_or(0.0);
         // re-base one latency sample taken at receiver time t_us; None if the log doesn't cover it
         let rebase = |lat: f64, t_us: u64| -> Option<f64> {
             let Some(c) = &clock else { return Some(lat) };
             if reverse {
                 // receiver = Pi; used = -(Pi-laptop) at start; true = -(Pi-laptop)(t)
-                let x = c.at(t_us.saturating_sub((-used * 1000.0) as i64 as u64))?;
+                // laptop time = Pi time - (Pi - laptop) = t_us + used. Signed: when the
+                // Pi is behind, `used` is positive (the old u64 cast saturated to 0).
+                let laptop_us = (t_us as i64).checked_add((used * 1000.0) as i64)?;
+                let x = c.at(u64::try_from(laptop_us).ok()?)?;
                 Some(lat - used - x)
             } else {
                 Some(lat - used + c.at(t_us)?)

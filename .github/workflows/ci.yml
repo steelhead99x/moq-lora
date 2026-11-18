@@ -1,7 +1,9 @@
 name: ci
 
 on:
+  # Pull requests get one run; pushes are only built on main (a PR branch used to run twice).
   push:
+    branches: [main]
   pull_request:
 
 jobs:

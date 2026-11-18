@@ -261,6 +261,25 @@ because the UF2 was not rebuilt.
 AppleDouble `._*` files under `results/` were removed. A scan of their printable
 strings did not find home paths or names.
 
+## Follow-up review, 2026-11-18
+
+A second pass over `65140d4`. Fixed:
+
+| what | where |
+|---|---|
+| `summary.json` wrote `NaN` for empty latency lists (any run without `--decode`), which is not JSON; the report then failed. Now `null`. | recv `jnum` |
+| Report dropped every latency sample on a reverse run when the Pi clock was behind the laptop (negative shift cast to `u64`). | report `rebase` |
+| Report guessed direction from sender CPU, so a low-CPU forward run (e.g. `--encoder hw`) was labelled laptop to Pi. It now uses the sender's `link` field; the CPU guess remains only for summaries without it. | report `reverse` |
+| Sender exited 0 when the source produced nothing or the encoder failed. Now exit 1, with `encoder_ok` in the summary. | send, end of `main` |
+| Receiver lost its summary when the serial port dropped mid-run. It now writes it with `"port_closed":true`, then exits 1. | recv main loop |
+| In `--catwan` mode the stick's `ERR tx` / `ERR txtimeout` lines were discarded, so `tx_errors` stayed 0. They are now counted and can trigger `tx_fatal`. | send `take_stick_errors` |
+| Sender panicked on a frame too short for the clock overlay (`--size 640x64`); receiver looped forever on `--size 0x0 --decode`. Both sizes are now validated and `draw_text` clips. | send/recv `--size`, `stamp::draw_text` |
+| `read_line_limited` returned `Interrupted` instead of retrying; `stalls` underflowed on a backward clock step; `parse_key_hex` left an unwiped hex copy of the key (and `decode_hex` could reallocate it). | `lib.rs`, `seal.rs`, recv and report `stalls` |
+
+The shipped `results/video/table.md` rows regenerate identically. Checked with unit tests, the
+original repros, a loopback run, and a fake CatWAN on a pty (port drop, `ERR tx`). Not checked on
+radio hardware, and the armv7 and firmware builds were not run in this environment.
+
 Update 2026-11-17: after this review the owner chose a fresh root commit, so the
 earlier history (and the strings above that lived only there) is not in this repository.
 The license is `MIT OR Apache-2.0`, with both texts at the top level.
