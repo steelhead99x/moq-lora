@@ -107,11 +107,17 @@ impl ObjectSealer {
 
 /// Parse a hex key (whitespace ignored).
 pub fn parse_key_hex(s: &str) -> Option<Vec<u8>> {
-    let h: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    if h.is_empty() {
-        return None;
-    }
-    crate::decode_hex(&h)
+    // Sized up front so it never reallocates, and wiped before it is freed: this is
+    // a copy of the key in hex.
+    let mut h = String::with_capacity(s.len());
+    h.extend(s.chars().filter(|c| !c.is_whitespace()));
+    let key = if h.is_empty() {
+        None
+    } else {
+        crate::decode_hex(&h)
+    };
+    wipe(&mut h.into_bytes());
+    key
 }
 
 /// Session id to use after the 16-bit group counter wraps.
@@ -154,7 +160,8 @@ impl std::fmt::Display for ReadKeyError {
 
 impl std::error::Error for ReadKeyError {}
 
-fn wipe(buf: &mut [u8]) {
+/// Overwrite `buf` with zeros in a way the compiler won't optimize away.
+pub(crate) fn wipe(buf: &mut [u8]) {
     for b in buf {
         // SAFETY: `b` points at a byte of `buf` for this write.
         unsafe { std::ptr::write_volatile(b, 0) };

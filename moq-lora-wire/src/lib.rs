@@ -105,9 +105,20 @@ pub fn decode_hex(s: &str) -> Option<Vec<u8>> {
     if !b.len().is_multiple_of(2) {
         return None;
     }
-    b.chunks_exact(2)
-        .map(|p| Some(val(p[0])? << 4 | val(p[1])?))
-        .collect()
+    // Sized up front: this also decodes key files, and a growing Vec would leave
+    // copies of the key in freed memory.
+    let mut out = Vec::with_capacity(b.len() / 2);
+    for p in b.chunks_exact(2) {
+        match (val(p[0]), val(p[1])) {
+            (Some(hi), Some(lo)) => out.push(hi << 4 | lo),
+            _ => {
+                // what was decoded so far may be part of a key
+                seal::wipe(&mut out);
+                return None;
+            }
+        }
+    }
+    Some(out)
 }
 
 /// One received frame as reported by the CatWAN firmware, the Pi receiver thread or
