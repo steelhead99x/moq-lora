@@ -284,6 +284,17 @@ fn next_capture(caps: &mut VecDeque<(u32, u64)>, last: &mut u32, now: u64) -> (u
     }
 }
 
+/// The (group, object) position of the next access unit, or `None` when a GOP has
+/// run past 256 frames. Only a keyframe opens a group: a group opened on a P-frame
+/// would hand the receiver a non-IDR as its random access point.
+fn advance(group: u16, obj: u8, key: bool) -> Option<(u16, u8)> {
+    if key {
+        Some((group.wrapping_add(1), 0))
+    } else {
+        Some((group, obj.checked_add(1)?))
+    }
+}
+
 fn random_u32() -> u32 {
     let mut b = [0u8; 4];
     std::fs::File::open("/dev/urandom")
@@ -314,6 +325,10 @@ fn main() -> Result<()> {
     }
     if a.power > 5 || a.power < 2 {
         bail!("--power must be 2..=5 dBm");
+    }
+    // An object id is one byte, so a group holds at most 256 frames.
+    if !(1..=256).contains(&a.gop) {
+        bail!("--gop must be 1..=256 (a group's object id is one byte)");
     }
     let (w, h): (usize, usize) = {
         let (x, y) = a.size.split_once('x').context("--size WxH")?;
@@ -640,6 +655,7 @@ fn main() -> Result<()> {
     };
     let mut session = random_u32();
     let (mut last_frame_no, mut uncaptured) = (0u32, 0u64);
+    let mut gop_overrun = false;
     let mut seal_s = 0f64;
     let mut obj_bytes = 0u64;
     let mut frag = Fragmenter::new(a.fec_k).map_err(|x| anyhow::anyhow!("{x:?}"))?;
@@ -659,17 +675,28 @@ fn main() -> Result<()> {
                 eprintln!("access unit with no capture record, after frame {frame_no}");
             }
             let key = annexb::is_key(&au);
-            if key || obj == u8::MAX {
-                group = group.wrapping_add(1);
-                if group == 0 && objects > 0 {
+            if gop_overrun {
+                return Ok(());
+            }
+            let Some((g, o)) = advance(group, obj, key) else {
+                // The encoder ignored the keyframe interval. Stop instead of sending a
+                // group the receiver can't start from; the run fails after its summary.
+                eprintln!(
+                    "encoder sent more than 256 frames without a keyframe (--gop {}), stopping",
+                    a.gop
+                );
+                gop_overrun = true;
+                stop.store(true, Ordering::Relaxed);
+                return Ok(());
+            };
+            if key {
+                if g == 0 && objects > 0 {
                     // nonces stay unique across a group-id wrap, including a repeated draw
                     session = seal::session_after_wrap(session, random_u32());
                 }
-                obj = 0;
-                keys += key as u64;
-            } else {
-                obj += 1;
+                keys += 1;
             }
+            (group, obj) = (g, o);
             let oh = ObjHdr {
                 frame_no,
                 cap_us,
@@ -769,7 +796,7 @@ fn main() -> Result<()> {
     let (cpu_self, cpu_child) = (cpu_s(libc::RUSAGE_SELF), cpu_s(libc::RUSAGE_CHILDREN));
     let objs = objects.max(1) as f64;
     println!(
-        "{{\"role\":\"send\",\"profile\":\"{}\",\"freq_hz\":{freq_hz},\"power_dbm\":{},\"size\":\"{}\",\"fps\":{},\"gop\":{},\"encoder\":\"{}\",\"bitrate_target\":{},\"fec_k\":{},\"min_frame\":{},\"wall_s\":{wall:.2},\"captured\":{captured},\"objects\":{objects},\"keyframes\":{keys},\"video_bps\":{:.0},\"frames_tx\":{},\"bytes_tx\":{},\"radio_busy_pct\":{:.1},\"air_bps\":{:.0},\"objects_dropped\":{},\"groups_dropped\":{},\"tx_errors\":{},\"max_queue_frames\":{},\"cipher\":\"{}\",\"au_bytes\":{au_bytes},\"object_bytes\":{obj_bytes},\"overhead_per_object\":{{\"objhdr\":{},\"aead\":{},\"frame_headers_crc\":{:.1},\"padding_parity\":{:.1},\"total_air\":{:.1}}},\"seal_us_per_object\":{:.1},\"cpu_pct_sender\":{:.1},\"cpu_pct_ffmpeg\":{:.1},\"cpu_pct_total\":{:.1},\"cpu_cores\":{},\"link\":\"{}\",\"tx_fatal\":{tx_fatal},\"encoder_ok\":{enc_ok},\"source_stalled\":{source_stalled},\"aus_without_capture\":{uncaptured}}}",
+        "{{\"role\":\"send\",\"profile\":\"{}\",\"freq_hz\":{freq_hz},\"power_dbm\":{},\"size\":\"{}\",\"fps\":{},\"gop\":{},\"encoder\":\"{}\",\"bitrate_target\":{},\"fec_k\":{},\"min_frame\":{},\"wall_s\":{wall:.2},\"captured\":{captured},\"objects\":{objects},\"keyframes\":{keys},\"video_bps\":{:.0},\"frames_tx\":{},\"bytes_tx\":{},\"radio_busy_pct\":{:.1},\"air_bps\":{:.0},\"objects_dropped\":{},\"groups_dropped\":{},\"tx_errors\":{},\"max_queue_frames\":{},\"cipher\":\"{}\",\"au_bytes\":{au_bytes},\"object_bytes\":{obj_bytes},\"overhead_per_object\":{{\"objhdr\":{},\"aead\":{},\"frame_headers_crc\":{:.1},\"padding_parity\":{:.1},\"total_air\":{:.1}}},\"seal_us_per_object\":{:.1},\"cpu_pct_sender\":{:.1},\"cpu_pct_ffmpeg\":{:.1},\"cpu_pct_total\":{:.1},\"cpu_cores\":{},\"link\":\"{}\",\"tx_fatal\":{tx_fatal},\"encoder_ok\":{enc_ok},\"source_stalled\":{source_stalled},\"aus_without_capture\":{uncaptured},\"gop_overrun\":{gop_overrun}}}",
         a.profile, a.power, a.size, a.fps, a.gop, a.encoder, a.bitrate, a.fec_k, a.min_frame, au_bytes as f64 * 8.0 / wall, st.frames, st.bytes,
         100.0 * busy / wall, st.bytes as f64 * 8.0 / wall, st.objects_dropped, st.groups_dropped, st.tx_errors, st.max_queue_frames,
         sealer.as_ref().map(|x| x.cipher.name()).unwrap_or("none"),
@@ -785,10 +812,10 @@ fn main() -> Result<()> {
     );
     // An AU with no capture record means the encoder and the capture count disagree,
     // so the run's latency and loss numbers can't be trusted.
-    if tx_fatal || captured == 0 || !enc_ok || source_stalled || uncaptured > 0 {
+    if tx_fatal || captured == 0 || !enc_ok || source_stalled || uncaptured > 0 || gop_overrun {
         // The summary above is the last line on stdout (the harness reads it with
         // `tail -1`); report the failure through the exit status only.
-        eprintln!("run failed: tx_fatal={tx_fatal} captured={captured} encoder_ok={enc_ok} source_stalled={source_stalled} aus_without_capture={uncaptured}");
+        eprintln!("run failed: tx_fatal={tx_fatal} captured={captured} encoder_ok={enc_ok} source_stalled={source_stalled} aus_without_capture={uncaptured} gop_overrun={gop_overrun}");
         std::process::exit(1);
     }
     Ok(())
@@ -796,8 +823,18 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::next_capture;
+    use super::{advance, next_capture};
     use std::collections::VecDeque;
+
+    #[test]
+    fn only_a_keyframe_opens_a_group() {
+        assert_eq!(advance(u16::MAX, 0, true), Some((0, 0))); // first IDR
+        assert_eq!(advance(3, 0, false), Some((3, 1)));
+        assert_eq!(advance(3, 254, false), Some((3, 255)));
+        assert_eq!(advance(3, 255, false), None); // 257th frame without an IDR
+        assert_eq!(advance(3, 255, true), Some((4, 0)));
+        assert_eq!(advance(u16::MAX, 7, true), Some((0, 0))); // group id wraps
+    }
 
     #[test]
     fn uncaptured_au_reuses_the_last_frame_number() {
