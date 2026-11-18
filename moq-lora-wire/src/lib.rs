@@ -104,7 +104,14 @@ pub fn decode_hex(s: &str) -> Option<Vec<u8>> {
     // copies of the key in freed memory.
     let mut out = Vec::with_capacity(b.len() / 2);
     for p in b.chunks_exact(2) {
-        out.push(val(p[0])? << 4 | val(p[1])?);
+        match (val(p[0]), val(p[1])) {
+            (Some(hi), Some(lo)) => out.push(hi << 4 | lo),
+            _ => {
+                // what was decoded so far may be part of a key
+                seal::wipe(&mut out);
+                return None;
+            }
+        }
     }
     Some(out)
 }
