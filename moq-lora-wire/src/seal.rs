@@ -116,8 +116,7 @@ pub fn parse_key_hex(s: &str) -> Option<Vec<u8>> {
     } else {
         crate::decode_hex(&h)
     };
-    // SAFETY: zero bytes are valid UTF-8, so the String stays valid.
-    wipe(unsafe { h.as_bytes_mut() });
+    wipe(&mut h.into_bytes());
     key
 }
 
@@ -161,7 +160,8 @@ impl std::fmt::Display for ReadKeyError {
 
 impl std::error::Error for ReadKeyError {}
 
-fn wipe(buf: &mut [u8]) {
+/// Overwrite `buf` with zeros in a way the compiler won't optimize away.
+pub(crate) fn wipe(buf: &mut [u8]) {
     for b in buf {
         // SAFETY: `b` points at a byte of `buf` for this write.
         unsafe { std::ptr::write_volatile(b, 0) };
