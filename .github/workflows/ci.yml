@@ -57,6 +57,9 @@ jobs:
         with:
           components: rustfmt, clippy
           targets: thumbv6m-none-eabi
+      - name: shipped UF2 matches SHA256SUMS
+        working-directory: firmware
+        run: sha256sum -c SHA256SUMS
       - name: fmt, clippy, build
         working-directory: firmware/catwan-fw
         run: |

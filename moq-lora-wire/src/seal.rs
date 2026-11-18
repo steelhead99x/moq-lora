@@ -108,12 +108,10 @@ impl ObjectSealer {
 /// Parse a hex key (whitespace ignored).
 pub fn parse_key_hex(s: &str) -> Option<Vec<u8>> {
     let h: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    if h.is_empty() || !h.len().is_multiple_of(2) {
+    if h.is_empty() {
         return None;
     }
-    (0..h.len() / 2)
-        .map(|i| u8::from_str_radix(&h[2 * i..2 * i + 2], 16).ok())
-        .collect()
+    crate::decode_hex(&h)
 }
 
 /// Session id to use after the 16-bit group counter wraps.
@@ -247,6 +245,7 @@ mod tests {
         assert!(parse_key_hex("").is_none());
         assert!(parse_key_hex("abc").is_none());
         assert!(parse_key_hex("zz").is_none());
+        assert!(parse_key_hex("a\u{e9}b").is_none()); // used to panic on a char boundary
         assert_eq!(session_after_wrap(7, 7), 8);
         assert_eq!(session_after_wrap(u32::MAX, u32::MAX), 0);
         assert_eq!(session_after_wrap(7, 9), 9);

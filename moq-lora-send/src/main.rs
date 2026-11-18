@@ -280,8 +280,8 @@ fn main() -> Result<()> {
         let (x, y) = a.size.split_once('x').context("--size WxH")?;
         (x.parse()?, y.parse()?)
     };
-    if w % 40 != 0 || h % 2 != 0 || h < 64 {
-        bail!("width must be a multiple of 40");
+    if w == 0 || w % 40 != 0 || h % 2 != 0 || h < 64 {
+        bail!("--size: width must be a non-zero multiple of 40, height even and at least 64");
     }
     let prof = parse_profile(&a.profile)?;
     let freq_hz = (a.freq * 1e6).round() as u32;
@@ -473,11 +473,12 @@ fn main() -> Result<()> {
     let done = Arc::new(AtomicBool::new(false));
     let max_age = a.max_age_ms * 1000;
     let tx_thread = {
-        let (q, done) = (q.clone(), done.clone());
-        std::thread::spawn(move || -> Result<(TxStats, Link, f64)> {
+        let (q, done, stop) = (q.clone(), done.clone(), stop.clone());
+        std::thread::spawn(move || -> (TxStats, Link, f64, bool) {
             let mut st = TxStats::default();
             let mut dropped_group: Option<u16> = None;
             let mut busy = Duration::ZERO;
+            let mut fatal = false;
             loop {
                 let fr = {
                     let (m, cv) = &*q;
@@ -520,14 +521,19 @@ fn main() -> Result<()> {
                     st.tx_errors += 1;
                     eprintln!("tx error: {e}");
                     if st.tx_errors > 20 {
-                        bail!("too many TX errors");
+                        // Give up, but let the run wind down and print its summary:
+                        // stopping capture closes the encoder, which ends the main loop.
+                        eprintln!("too many TX errors, stopping");
+                        fatal = true;
+                        stop.store(true, Ordering::Relaxed);
+                        break;
                     }
                 }
                 busy += t.elapsed();
                 st.frames += 1;
                 st.bytes += f.len() as u64;
             }
-            Ok((st, link, busy.as_secs_f64()))
+            (st, link, busy.as_secs_f64(), fatal)
         })
     };
 
@@ -637,7 +643,7 @@ fn main() -> Result<()> {
     let _ = src.wait();
     let _ = enc.wait();
     let _ = rd_thread.join();
-    let (st, mut link, busy) = tx_thread.join().unwrap()?;
+    let (st, mut link, busy, tx_fatal) = tx_thread.join().unwrap();
     #[cfg(target_os = "linux")]
     if let Link::Radio(r) = &mut link {
         r.idle();
@@ -653,7 +659,7 @@ fn main() -> Result<()> {
     let (cpu_self, cpu_child) = (cpu_s(libc::RUSAGE_SELF), cpu_s(libc::RUSAGE_CHILDREN));
     let objs = objects.max(1) as f64;
     println!(
-        "{{\"role\":\"send\",\"profile\":\"{}\",\"freq_hz\":{freq_hz},\"power_dbm\":{},\"size\":\"{}\",\"fps\":{},\"gop\":{},\"encoder\":\"{}\",\"bitrate_target\":{},\"fec_k\":{},\"min_frame\":{},\"wall_s\":{wall:.2},\"captured\":{captured},\"objects\":{objects},\"keyframes\":{keys},\"video_bps\":{:.0},\"frames_tx\":{},\"bytes_tx\":{},\"radio_busy_pct\":{:.1},\"air_bps\":{:.0},\"objects_dropped\":{},\"groups_dropped\":{},\"tx_errors\":{},\"max_queue_frames\":{},\"cipher\":\"{}\",\"au_bytes\":{au_bytes},\"object_bytes\":{obj_bytes},\"overhead_per_object\":{{\"objhdr\":{},\"aead\":{},\"frame_headers_crc\":{:.1},\"padding_parity\":{:.1},\"total_air\":{:.1}}},\"seal_us_per_object\":{:.1},\"cpu_pct_sender\":{:.1},\"cpu_pct_ffmpeg\":{:.1},\"cpu_pct_total\":{:.1},\"cpu_cores\":{},\"link\":\"{}\"}}",
+        "{{\"role\":\"send\",\"profile\":\"{}\",\"freq_hz\":{freq_hz},\"power_dbm\":{},\"size\":\"{}\",\"fps\":{},\"gop\":{},\"encoder\":\"{}\",\"bitrate_target\":{},\"fec_k\":{},\"min_frame\":{},\"wall_s\":{wall:.2},\"captured\":{captured},\"objects\":{objects},\"keyframes\":{keys},\"video_bps\":{:.0},\"frames_tx\":{},\"bytes_tx\":{},\"radio_busy_pct\":{:.1},\"air_bps\":{:.0},\"objects_dropped\":{},\"groups_dropped\":{},\"tx_errors\":{},\"max_queue_frames\":{},\"cipher\":\"{}\",\"au_bytes\":{au_bytes},\"object_bytes\":{obj_bytes},\"overhead_per_object\":{{\"objhdr\":{},\"aead\":{},\"frame_headers_crc\":{:.1},\"padding_parity\":{:.1},\"total_air\":{:.1}}},\"seal_us_per_object\":{:.1},\"cpu_pct_sender\":{:.1},\"cpu_pct_ffmpeg\":{:.1},\"cpu_pct_total\":{:.1},\"cpu_cores\":{},\"link\":\"{}\",\"tx_fatal\":{tx_fatal}}}",
         a.profile, a.power, a.size, a.fps, a.gop, a.encoder, a.bitrate, a.fec_k, a.min_frame, au_bytes as f64 * 8.0 / wall, st.frames, st.bytes,
         100.0 * busy / wall, st.bytes as f64 * 8.0 / wall, st.objects_dropped, st.groups_dropped, st.tx_errors, st.max_queue_frames,
         sealer.as_ref().map(|x| x.cipher.name()).unwrap_or("none"),
@@ -667,5 +673,10 @@ fn main() -> Result<()> {
         std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
         if a.loopback.is_some() { "loopback" } else if a.catwan.is_some() { "catwan" } else { "sx1276" }
     );
+    if tx_fatal {
+        // The summary above is the last line on stdout (the harness reads it with
+        // `tail -1`); report the failure through the exit status only.
+        std::process::exit(1);
+    }
     Ok(())
 }

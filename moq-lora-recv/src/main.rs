@@ -10,8 +10,8 @@ use anyhow::{bail, Context, Result};
 static RADIO_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 use clap::Parser;
 use moq_lora_wire::{
-    parse_fsk_profile, read_line_limited, seal, stamp, Event, GroupGate, Line, ObjHdr, Reassembler,
-    MAX_SERIAL_LINE,
+    parse_fsk_profile, parse_r_line, read_line_limited, seal, stamp, Event, GroupGate, Line,
+    ObjHdr, Reassembler, MAX_SERIAL_LINE,
 };
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
@@ -212,10 +212,14 @@ fn stalls(times_us: &[u64], thr_ms: f64) -> (u32, f64) {
 /// Ping-pong `date` over one ssh session; offset = remote - local midpoint of the
 /// lowest-RTT exchange (NTP-style).
 fn clock_check(host: &str) -> Result<()> {
+    if host.is_empty() || host.starts_with('-') {
+        bail!("--clock-check: {host:?} is not a host name");
+    }
     let mut c = Command::new("ssh")
         .args([
             "-o",
             "BatchMode=yes",
+            "--",
             host,
             "while read l; do date +%s%N; done",
         ])
@@ -472,10 +476,10 @@ fn main() -> Result<()> {
         let si = c.stdin.take().unwrap();
         let mut so = c.stdout.take().unwrap();
         let path = format!("{}/decoded.jsonl", a.out);
+        let mut lg = BufWriter::new(File::create(&path).with_context(|| format!("create {path}"))?);
         let off = a.clock_offset_ms;
         dec_th = Some(std::thread::spawn(
             move || -> (Vec<u64>, Vec<(u64, f64)>, u64) {
-                let mut lg = BufWriter::new(File::create(path).unwrap());
                 let mut buf = vec![0u8; w * h];
                 let (mut times, mut lat, mut unread) = (Vec::new(), Vec::new(), 0u64);
                 while so.read_exact(&mut buf).is_ok() {
@@ -607,24 +611,22 @@ fn main() -> Result<()> {
                         _ => writeln!(r, "{t} {l}")?,
                     }
                 }
-                if let Some(rest) = l.strip_prefix("R ") {
-                    let mut it = rest.split(' ');
-                    let (_tdev, rs, _snr, hx) =
-                        (it.next(), it.next(), it.next(), it.next().unwrap_or(""));
-                    if let Some(r) = rs.and_then(|s| s.parse::<i32>().ok()) {
-                        rssi.push(r as f64);
-                    }
-                    let fr: Option<Vec<u8>> = (0..hx.len() / 2)
-                        .map(|i| u8::from_str_radix(&hx[2 * i..2 * i + 2], 16).ok())
-                        .collect();
-                    if let Some(fr) = fr {
-                        first_frame.get_or_insert(t);
-                        rx_bytes += fr.len() as u64;
-                        last_frame = t;
-                        last_rx = Instant::now();
-                        for e in re.push(&fr) {
-                            handle(e, t)?;
+                if l.starts_with("R ") {
+                    match parse_r_line(&l) {
+                        Some(r) => {
+                            if let Some(v) = r.rssi {
+                                rssi.push(v as f64);
+                            }
+                            first_frame.get_or_insert(t);
+                            rx_bytes += r.frame.len() as u64;
+                            last_frame = t;
+                            last_rx = Instant::now();
+                            for e in re.push(&r.frame) {
+                                handle(e, t)?;
+                            }
                         }
+                        // garbled line from the serial link: not a frame
+                        None => rx_err += 1,
                     }
                 } else if l.starts_with("X ") {
                     rx_err += 1;
