@@ -59,7 +59,7 @@ type Spi = ExclusiveDevice<SpidevBus, CdevPin, Delay>;
 pub type Hat = Sx1276<Spi, CdevPin, CdevIrq, Delay>;
 
 /// An SX1276 driver error as an `anyhow` error.
-pub fn e<E: std::fmt::Debug>(err: sx1276::Error<E>) -> anyhow::Error {
+pub fn sx_err<E: std::fmt::Debug>(err: sx1276::Error<E>) -> anyhow::Error {
     anyhow::anyhow!("sx1276: {err:?}")
 }
 
@@ -95,14 +95,15 @@ pub fn open_hat(spi_hz: u32, freq_hz: u32, cfg: &FskConfig, power: i8) -> Result
     let spi = ExclusiveDevice::new(bus, CdevPin::new(nss)?, Delay)
         .map_err(|x| anyhow::anyhow!("NSS: {x}"))?;
     let mut r = Sx1276::new(spi, CdevPin::new(rst)?, CdevIrq { ev }, Delay);
-    r.init(freq_hz, &sx1276::LoRaConfig::default()).map_err(e)?;
-    r.enter_fsk_mode().map_err(e)?;
-    r.set_frequency(freq_hz).map_err(e)?;
-    r.write_raw(0x0C, 0x23).map_err(e)?;
-    r.configure_fsk(cfg).map_err(e)?;
-    r.standby().map_err(e)?;
-    r.set_tx_power(PaOutput::PaBoost, power).map_err(e)?;
-    if r.frequency().map_err(e)?.abs_diff(freq_hz) > 1000 {
+    r.init(freq_hz, &sx1276::LoRaConfig::default())
+        .map_err(sx_err)?;
+    r.enter_fsk_mode().map_err(sx_err)?;
+    r.set_frequency(freq_hz).map_err(sx_err)?;
+    r.write_raw(0x0C, 0x23).map_err(sx_err)?;
+    r.configure_fsk(cfg).map_err(sx_err)?;
+    r.standby().map_err(sx_err)?;
+    r.set_tx_power(PaOutput::PaBoost, power).map_err(sx_err)?;
+    if r.frequency().map_err(sx_err)?.abs_diff(freq_hz) > 1000 {
         bail!("frequency readback mismatch");
     }
     Ok(r)
