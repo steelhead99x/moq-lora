@@ -514,7 +514,8 @@ impl Partial {
 
 /// Largest forward step one frame may make on its own, in frames (about 0.45 s at
 /// 300 kbit/s). A larger step moves the baseline only when the next frame continues from
-/// it, so one garbled, injected or replayed sequence number can't fake or hide loss.
+/// it, so one garbled, injected or replayed sequence number can't hide loss, and can add
+/// at most `SEQ_STEP - 1` frames to it (a step that small looks like honest loss).
 ///
 /// Limits: sequence numbers are not authenticated, so two consecutive forged frames far
 /// ahead are a confirmed gap (closing that needs the frame header under the AEAD,
