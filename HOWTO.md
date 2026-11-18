@@ -190,7 +190,7 @@ More detail is in [scripts/README.md](scripts/README.md). The meaning of each co
   ./moq-lora-send ... --key-file ~/moq-lora-key.hex         # on the Pi
   ./moq-lora-recv ... --key-file moq-lora-key.hex           # on the laptop
   ```
-  It costs 20 bytes per frame. A frame that fails the check is treated as lost. Know what
+  It costs 20 bytes per frame, 28 on the first of each GOP, which carries the run's salt. A frame that fails the check is treated as lost. Know what
   this doesn't cover: there's no key exchange, a recorded frame can be replayed, and the
   radio headers are sent unencrypted. The tools refuse a key file that other users can read.
 * **Reverse direction (laptop to Pi).** Run `moq-lora-send --catwan /dev/cu.usbmodemXXXX` on

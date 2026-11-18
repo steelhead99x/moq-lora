@@ -559,7 +559,7 @@ fn main() -> Result<()> {
     for s in play.iter().chain(dec.iter()) {
         s.send(&AUD);
     }
-    let sealer = match &a.key_file {
+    let mut sealer = match &a.key_file {
         Some(kf) => {
             let c = seal::Cipher::parse(&a.cipher).context("--cipher")?;
             Some(seal::open_sealer(std::path::Path::new(kf), c).map_err(|e| anyhow::anyhow!(e))?)
@@ -589,7 +589,7 @@ fn main() -> Result<()> {
                 data,
                 recovered,
             } => {
-                let data = match &sealer {
+                let data = match sealer.as_mut() {
                     Some(sl) => {
                         let t0 = Instant::now();
                         let r = sl.open(group, obj, &data);
