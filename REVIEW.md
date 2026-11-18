@@ -77,17 +77,17 @@ This is the receive path that produced the Pi-side loss numbers. Changing it wou
 change those numbers. Not changed. `FskLongRx::payload` (`:169`) no longer panics when
 no packet is stored (`1..=0` used to panic). That does not change a successful read.
 
-### Nonce uniqueness is a caller contract. Immediate wrap collision fixed; birthday bound deferred.
+### Nonce uniqueness is a caller contract. Fixed with per-run subkeys.
 
-`Nonce::assume_unique_for_key` (`seal.rs:55`) will silently reuse a ChaCha20 or
-AES-GCM keystream if `(session, group, obj)` repeats under one key. The sender
-redraws the session when the 16-bit group id wraps (`moq-lora-send/src/main.rs:567`).
-Two draws used to be allowed to collide, which would reuse every nonce of the
-previous session. `session_after_wrap` (`moq-lora-wire/src/seal.rs:125`) now bumps the
-id when the new draw equals the one that just ended. A collision with an older
-session in the same key's life is still possible (about 2^16 sessions). Rotate the
-key before that. Not a problem for one 330 s run (one group per second wraps after
-about 18 hours).
+`Nonce::assume_unique_for_key` will silently reuse a ChaCha20 or AES-GCM keystream if a
+nonce repeats under one key. Each run used to draw a random 32-bit session id as the
+nonce prefix, so two runs under one key collided after about 2^16 runs. Now each run
+draws a 96-bit salt and encrypts under a subkey derived from the key and the salt
+(HKDF-SHA256, `moq-lora-wire/src/seal.rs`); object 0 of each group carries the salt in
+the clear, other objects its first 4 bytes. The sender draws a new salt when the
+16-bit group id wraps. Reusing a keystream now needs two equal 96-bit salts. The
+receiver caches a salt's subkey only after an object under it authenticates, so a
+forged object 0 can't evict the real one. Frame `VERSION` is 4 for this format.
 
 Tag comparison is rind's `ct_equal` (ChaCha20-Poly1305 and AES-GCM `open`). This crate
 does not compare tags itself. rind's `Key` drop wipes its copy; `open_sealer`
@@ -211,7 +211,7 @@ was left.
 | Annex-B tail above `MAX_OBJECT` is dropped | `annexb.rs:54` | a sendable access unit is still emitted |
 | Key file must be mode 0600 (or stricter); hex bytes wiped | `seal.rs:171`, `seal.rs:208` | both binaries use `open_sealer` |
 | Profile parser rejects bitrate 0 and a suffix other than `x` | `lib.rs:95` | `0:...` used to panic in the airtime division |
-| Session redraw skips an immediate repeat | `seal.rs:125` | only the wrap path |
+| Per-run subkeys from a 96-bit salt replace the 32-bit session id | `seal.rs` | no birthday bound at 2^16 runs |
 | Empty `FskLongRx::payload` does not panic | `vendor/sx1276/src/lib.rs:169` | |
 | Stats line from the stick is JSON-escaped | `moq-lora-recv/src/main.rs:176` | normal `OK S ...` lines are unchanged |
 | `panic = "abort"` on the firmware profiles | `firmware/catwan-fw/Cargo.toml` | thumbv6m cannot unwind; rustc 1.90 would not link without it |
@@ -222,10 +222,10 @@ Tests for the wire fixes are in `moq-lora-wire` (`hostile_frames_do_not_panic`,
 
 ## Crypto notes (what was checked)
 
-* Nonce is 12 bytes, unique per `(session, group, obj)` inside one session. Session
-  is random per process and redrawn on group wrap.
+* Nonce is 12 bytes, unique per `(group, obj)` under one run's subkey; the subkey comes
+  from a random 96-bit salt per run, redrawn on group wrap.
 * AAD is the group and object ids. Moving a ciphertext to another position fails open.
-  Flipping the clear session prefix fails open (it is part of the nonce).
+  Flipping the clear salt prefix fails open (it picks the subkey and is in the nonce).
 * Tag check is rind's constant-time compare, not a `==` in this repo.
 * Key material is a file path, not an argument. The tools refuse a group- or
   world-readable file. No key file is in git, and `.gitignore` ignores

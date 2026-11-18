@@ -1,20 +1,35 @@
 //! Per-object authenticated encryption with [rind](https://github.com/kixel-ai/rind).
 //!
-//! Sealed object = `session u32 (clear) | AEAD(ObjHdr + access unit) | tag (16)`, so the
-//! overhead is [`OVERHEAD`] = 20 bytes per object (one video frame), independent of size.
+//! Each sender run draws a random 96-bit salt and encrypts under a subkey derived from the
+//! pre-shared key and that salt (HKDF-SHA256, the salt in its info), so two runs under one
+//! key never share a keystream (a collision needs two equal 96-bit salts). Sealed object:
 //!
-//! * nonce (12 B) = `session (4) | group (2) | obj (1) | 0 (5)`
+//! * object 0 of a group: `salt (12, clear) | AEAD(ObjHdr + access unit) | tag (16)`,
+//!   [`OVERHEAD_FIRST`] = 28 bytes, about once a second;
+//! * any other object: `salt[..4] (clear) | AEAD(..) | tag (16)`, [`OVERHEAD`] = 20 bytes.
+//!
+//! * nonce (12 B) = `salt[..4] | group (2) | obj (1) | 0 (5)`, unique per object within a
+//!   salt; the sender draws a new salt whenever the 16-bit group id wraps.
 //! * AAD = `group (2) | obj (1)`: an object cannot be replayed under another position.
-//! * `session` is random per sender run and re-drawn whenever the 16-bit group id wraps,
-//!   so a (key, nonce) pair is never reused unless two sessions draw the same 32-bit id
-//!   (birthday bound ~2^16 sessions per key: rotate the key long before that).
 //!
-//! Lost radio frames are handled below this layer (FEC / group gate); a frame that fails
-//! authentication is dropped like a lost object.
+//! The receiver learns a salt from an object 0 and keeps the subkeys of the last two salts
+//! that authenticated, so it can join mid-run at the next group. Lost radio frames are
+//! handled below this layer (FEC / group gate); a frame that fails authentication is
+//! dropped like a lost object.
 use rind::aead::{Key, Nonce, AES_128_GCM, AES_256_GCM, CHACHA20_POLY1305};
+use rind::hkdf::{Prk, HKDF_SHA256};
 
 pub const TAG_LEN: usize = 16;
-pub const OVERHEAD: usize = 4 + TAG_LEN;
+/// Length of a run's salt.
+pub const SALT_LEN: usize = 12;
+/// Bytes of the salt every object carries, to find its subkey.
+pub const PREFIX_LEN: usize = 4;
+/// What sealing adds to an object other than a group's first.
+pub const OVERHEAD: usize = PREFIX_LEN + TAG_LEN;
+/// What sealing adds to object 0 of a group, which carries the whole salt.
+pub const OVERHEAD_FIRST: usize = SALT_LEN + TAG_LEN;
+/// HKDF info label, so these subkeys are never confused with any other use of the key.
+const INFO: &[u8] = b"moq-lora object key v1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cipher {
@@ -47,61 +62,123 @@ impl Cipher {
     }
 }
 
+/// Seals and opens objects under per-run subkeys of one pre-shared key.
 pub struct ObjectSealer {
-    key: Key,
+    /// The pre-shared key as an HKDF pseudorandom key (it is already uniformly random, so
+    /// HKDF-Extract is skipped); rind wipes it on drop.
+    prk: Prk,
     pub cipher: Cipher,
+    /// Subkeys of the last salts used or authenticated, newest first.
+    keys: Vec<([u8; SALT_LEN], Key)>,
 }
 
-fn nonce(session: u32, group: u16, obj: u8) -> Nonce {
+fn nonce(prefix: &[u8], group: u16, obj: u8) -> Nonce {
     let mut n = [0u8; 12];
-    n[..4].copy_from_slice(&session.to_be_bytes());
+    n[..PREFIX_LEN].copy_from_slice(prefix);
     n[4..6].copy_from_slice(&group.to_be_bytes());
     n[6] = obj;
     Nonce::assume_unique_for_key(n)
 }
 
 impl ObjectSealer {
+    /// `key` is the pre-shared key, `cipher.key_len()` bytes.
     pub fn new(cipher: Cipher, key: &[u8]) -> Result<Self, &'static str> {
-        let alg = match cipher {
+        if key.len() != cipher.key_len() {
+            return Err("bad key length");
+        }
+        Ok(ObjectSealer {
+            prk: Prk::new(&HKDF_SHA256, key),
+            cipher,
+            keys: Vec::with_capacity(2),
+        })
+    }
+
+    fn derive(&self, salt: &[u8; SALT_LEN]) -> Key {
+        let alg = match self.cipher {
             Cipher::ChaCha20Poly1305 => &CHACHA20_POLY1305,
             Cipher::Aes128Gcm => &AES_128_GCM,
             Cipher::Aes256Gcm => &AES_256_GCM,
         };
-        Ok(ObjectSealer {
-            key: Key::new(alg, key).map_err(|_| "bad key length")?,
-            cipher,
-        })
+        let mut k = [0u8; 32];
+        let k = &mut k[..self.cipher.key_len()];
+        self.prk
+            .fill(&[INFO, self.cipher.name().as_bytes(), salt], k)
+            .expect("hkdf length");
+        let key = Key::new(alg, k).expect("subkey length");
+        wipe(k);
+        key
     }
 
-    /// Encrypt `plain` for position (`group`, `obj`) in `session`.
-    pub fn seal(&self, session: u32, group: u16, obj: u8, plain: &[u8]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(plain.len() + OVERHEAD);
-        out.extend_from_slice(&session.to_be_bytes());
+    fn remember(&mut self, salt: [u8; SALT_LEN], key: Key) {
+        self.keys.retain(|(s, _)| *s != salt);
+        self.keys.insert(0, (salt, key));
+        self.keys.truncate(2);
+    }
+
+    /// Encrypt `plain` for position (`group`, `obj`) under the run's `salt`.
+    pub fn seal(&mut self, salt: &[u8; SALT_LEN], group: u16, obj: u8, plain: &[u8]) -> Vec<u8> {
+        if self.keys.first().is_none_or(|(s, _)| s != salt) {
+            let key = self.derive(salt);
+            self.remember(*salt, key);
+        }
+        let clear: &[u8] = if obj == 0 { salt } else { &salt[..PREFIX_LEN] };
+        let mut out = Vec::with_capacity(clear.len() + plain.len() + TAG_LEN);
+        out.extend_from_slice(clear);
         out.extend_from_slice(plain);
         let aad = [(group >> 8) as u8, group as u8, obj];
-        let tag = self
-            .key
-            .seal_in_place_separate_tag(nonce(session, group, obj), &aad, &mut out[4..])
+        let tag = self.keys[0]
+            .1
+            .seal_in_place_separate_tag(
+                nonce(&salt[..PREFIX_LEN], group, obj),
+                &aad,
+                &mut out[clear.len()..],
+            )
             .expect("seal");
         out.extend_from_slice(tag.as_ref());
         out
     }
 
-    /// Authenticate and decrypt; `None` if the object was forged or corrupted.
-    pub fn open(&self, group: u16, obj: u8, sealed: &[u8]) -> Option<Vec<u8>> {
-        if sealed.len() < OVERHEAD {
-            return None;
-        }
-        let session = u32::from_be_bytes(sealed[..4].try_into().unwrap());
-        let mut buf = sealed[4..].to_vec();
+    /// Authenticate and decrypt; `None` if the object was forged or corrupted, or its salt
+    /// is unknown (no object 0 of its run has authenticated yet).
+    pub fn open(&mut self, group: u16, obj: u8, sealed: &[u8]) -> Option<Vec<u8>> {
         let aad = [(group >> 8) as u8, group as u8, obj];
-        let n = self
-            .key
-            .open_in_place(nonce(session, group, obj), &aad, &mut buf)
-            .ok()?
-            .len();
-        buf.truncate(n);
-        Some(buf)
+        if obj == 0 {
+            if sealed.len() < OVERHEAD_FIRST {
+                return None;
+            }
+            let salt: [u8; SALT_LEN] = sealed[..SALT_LEN].try_into().unwrap();
+            // A salt is cached only once an object under it authenticates, so a forged
+            // object 0 can't push the real subkey out.
+            let fresh = !self.keys.iter().any(|(s, _)| *s == salt);
+            let derived = fresh.then(|| self.derive(&salt));
+            let key = match &derived {
+                Some(k) => k,
+                None => &self.keys.iter().find(|(s, _)| *s == salt)?.1,
+            };
+            let mut buf = sealed[SALT_LEN..].to_vec();
+            let n = key
+                .open_in_place(nonce(&salt[..PREFIX_LEN], group, obj), &aad, &mut buf)
+                .ok()?
+                .len();
+            buf.truncate(n);
+            if let Some(k) = derived {
+                self.remember(salt, k);
+            }
+            Some(buf)
+        } else {
+            if sealed.len() < OVERHEAD {
+                return None;
+            }
+            let prefix = &sealed[..PREFIX_LEN];
+            let (_, key) = self.keys.iter().find(|(s, _)| &s[..PREFIX_LEN] == prefix)?;
+            let mut buf = sealed[PREFIX_LEN..].to_vec();
+            let n = key
+                .open_in_place(nonce(prefix, group, obj), &aad, &mut buf)
+                .ok()?
+                .len();
+            buf.truncate(n);
+            Some(buf)
+        }
     }
 }
 
@@ -118,20 +195,6 @@ pub fn parse_key_hex(s: &str) -> Option<Vec<u8>> {
     };
     wipe(&mut h.into_bytes());
     key
-}
-
-/// Session id to use after the 16-bit group counter wraps.
-///
-/// `draw` is a fresh random id. If it collides with the session that just ended,
-/// every nonce of that session would be reused under the same key, so the id is
-/// bumped. This does not remove the birthday bound against older sessions; rotate
-/// the key long before 2^16 sessions.
-pub fn session_after_wrap(prev: u32, draw: u32) -> u32 {
-    if draw == prev {
-        prev.wrapping_add(1)
-    } else {
-        draw
-    }
 }
 
 #[derive(Debug)]
@@ -236,7 +299,7 @@ pub fn read_key_file(path: &std::path::Path) -> Result<Vec<u8>, ReadKeyError> {
 }
 
 /// Load `path` and build a sealer. The hex file and the temporary key bytes
-/// are wiped; rind keeps its own copy of the key.
+/// are wiped; rind keeps its own copy of the key, as an HKDF key.
 pub fn open_sealer(path: &std::path::Path, cipher: Cipher) -> Result<ObjectSealer, ReadKeyError> {
     let mut key = read_key_file(path)?;
     let built = ObjectSealer::new(cipher, &key).map_err(|_| ReadKeyError::Len);
@@ -254,35 +317,80 @@ mod tests {
             Cipher::Aes128Gcm,
             Cipher::Aes256Gcm,
         ] {
-            let s = ObjectSealer::new(c, &vec![7u8; c.key_len()]).unwrap();
+            let key = vec![7u8; c.key_len()];
+            let (mut tx, mut rx) = (
+                ObjectSealer::new(c, &key).unwrap(),
+                ObjectSealer::new(c, &key).unwrap(),
+            );
+            let salt = [9u8; SALT_LEN];
             let p = b"an access unit".to_vec();
-            let x = s.seal(0xdead_beef, 300, 4, &p);
-            assert_eq!(x.len(), p.len() + OVERHEAD);
-            assert_eq!(s.open(300, 4, &x), Some(p.clone()));
-            assert_eq!(s.open(300, 5, &x), None); // wrong position
+            let first = tx.seal(&salt, 300, 0, &p);
+            let x = tx.seal(&salt, 300, 4, &p);
+            assert_eq!(
+                (first.len(), x.len()),
+                (p.len() + OVERHEAD_FIRST, p.len() + OVERHEAD)
+            );
+            // the receiver can't open a later object until it has seen the group's object 0
+            assert_eq!(rx.open(300, 4, &x), None);
+            assert_eq!(rx.open(300, 0, &first), Some(p.clone()));
+            assert_eq!(rx.open(300, 4, &x), Some(p.clone()));
+            assert_eq!(rx.open(300, 5, &x), None); // wrong position
             let mut t = x.clone();
             t[6] ^= 1;
-            assert_eq!(s.open(300, 4, &t), None);
-            // session id sits in the clear prefix and in the nonce
-            let mut sess = x.clone();
-            sess[0] ^= 0x01;
-            assert_eq!(s.open(300, 4, &sess), None);
-            assert_eq!(s.open(300, 4, &x[..x.len() - 1]), None);
-            assert!(s.open(300, 4, &[]).is_none());
+            assert_eq!(rx.open(300, 4, &t), None);
+            let mut pre = x.clone();
+            pre[0] ^= 0x01; // the prefix picks the subkey and is in the nonce
+            assert_eq!(rx.open(300, 4, &pre), None);
+            assert_eq!(rx.open(300, 4, &x[..x.len() - 1]), None);
+            assert!(rx.open(300, 4, &[]).is_none());
+            assert!(rx.open(300, 0, &first[..OVERHEAD_FIRST - 1]).is_none());
         }
     }
 
     #[test]
-    fn hex_and_session_wrap() {
+    fn runs_with_different_salts_use_different_keystreams() {
+        let key = [3u8; 32];
+        let mut a = ObjectSealer::new(Cipher::ChaCha20Poly1305, &key).unwrap();
+        let p = [0u8; 64];
+        // same key, position and session prefix; only the salt differs
+        let (s1, mut s2) = ([1u8; SALT_LEN], [1u8; SALT_LEN]);
+        s2[11] = 2;
+        let (x1, x2) = (a.seal(&s1, 5, 1, &p), a.seal(&s2, 5, 1, &p));
+        assert_eq!(x1[..PREFIX_LEN], x2[..PREFIX_LEN]);
+        assert_ne!(
+            x1[PREFIX_LEN..PREFIX_LEN + 64],
+            x2[PREFIX_LEN..PREFIX_LEN + 64]
+        );
+    }
+
+    #[test]
+    fn a_forged_object_zero_does_not_evict_the_real_salt() {
+        let key = [3u8; 32];
+        let mut tx = ObjectSealer::new(Cipher::ChaCha20Poly1305, &key).unwrap();
+        let mut rx = ObjectSealer::new(Cipher::ChaCha20Poly1305, &key).unwrap();
+        let salt = [4u8; SALT_LEN];
+        assert!(rx.open(1, 0, &tx.seal(&salt, 1, 0, b"idr")).is_some());
+        for i in 0..5u8 {
+            let mut forged = vec![i; OVERHEAD_FIRST + 8]; // random salts, no valid tag
+            forged[0] = 0xee;
+            assert!(rx.open(2, 0, &forged).is_none());
+        }
+        assert_eq!(
+            rx.open(1, 1, &tx.seal(&salt, 1, 1, b"p")).as_deref(),
+            Some(&b"p"[..])
+        );
+        // a wrong-length key is refused
+        assert!(ObjectSealer::new(Cipher::Aes128Gcm, &key).is_err());
+    }
+
+    #[test]
+    fn hex_keys() {
         assert_eq!(parse_key_hex("0a0b"), Some(vec![0x0a, 0x0b]));
         assert_eq!(parse_key_hex("0a 0b\n"), Some(vec![0x0a, 0x0b]));
         assert!(parse_key_hex("").is_none());
         assert!(parse_key_hex("abc").is_none());
         assert!(parse_key_hex("zz").is_none());
         assert!(parse_key_hex("a\u{e9}b").is_none()); // used to panic on a char boundary
-        assert_eq!(session_after_wrap(7, 7), 8);
-        assert_eq!(session_after_wrap(u32::MAX, u32::MAX), 0);
-        assert_eq!(session_after_wrap(7, 9), 9);
     }
 
     #[cfg(unix)]
@@ -303,8 +411,8 @@ mod tests {
         ));
         std::fs::write(&tight, &hex).unwrap();
         std::fs::set_permissions(&tight, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let s = open_sealer(&tight, Cipher::ChaCha20Poly1305).unwrap();
-        let ct = s.seal(1, 2, 3, b"frame");
+        let mut s = open_sealer(&tight, Cipher::ChaCha20Poly1305).unwrap();
+        let ct = s.seal(&[1; SALT_LEN], 2, 3, b"frame");
         assert_eq!(s.open(2, 3, &ct).as_deref(), Some(&b"frame"[..]));
         std::fs::write(&tight, "not-hex\n").unwrap();
         std::fs::set_permissions(&tight, std::fs::Permissions::from_mode(0o600)).unwrap();

@@ -53,7 +53,8 @@ antennas about 1 m apart.
 
 * **Missing frames are freezes, not smears.** About 1 in 20 frames wasn't shown. Each loss
   costs the rest of its GOP, which shows up as about 20 stalls (freezes over 250 ms) per 5.5 minutes.
-* **Encryption is basically free.** ChaCha20-Poly1305 per frame adds 20 bytes and ~95 µs on the Pi 2.
+* **Encryption is basically free.** ChaCha20-Poly1305 per frame adds 20 bytes (28 on the first frame
+  of each GOP) and ~95 µs on the Pi 2.
 * **Loss changes a lot from run to run.** An earlier pass with the same settings lost no frames at all.
 * **The reverse direction (laptop to Pi) works but loses more**, 8 to 15% of frames. The Pi's
   radio board can't tell it when data has arrived, so the Pi has to keep checking for incoming
@@ -132,8 +133,8 @@ Details in the [HOWTO](HOWTO.md#9-radio-rules).
 * The bitrate is set by hand. There's no adaptation.
 * The ffmpeg CLI decoder holds back one frame (~67 ms), and that's included in the latency numbers.
 * Encryption uses a pre-shared key. Frames are private and tamper-proof, but a recorded frame
-  can be replayed and the radio headers aren't encrypted. Each run draws a random 32-bit session
-  id, so rotate the key long before 2^16 runs, when two runs become likely to share one.
+  can be replayed and the radio headers aren't encrypted. Each run encrypts under its own subkey,
+  derived from the key and a random 96-bit salt, so runs never share a keystream.
   See [ROADMAP.md](ROADMAP.md) and the code review in [REVIEW.md](REVIEW.md).
 
 ## License
