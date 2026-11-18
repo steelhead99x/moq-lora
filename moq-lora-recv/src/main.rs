@@ -450,10 +450,11 @@ fn main() -> Result<()> {
     };
     let mut rec = BufWriter::new(File::create(format!("{}/rec.h264", a.out))?);
     let mut objlog = BufWriter::new(File::create(format!("{}/objects.jsonl", a.out))?);
-    // single-threaded decode: frame threading would hold back (threads-1) frames
+    // Single-threaded decode: frame threading would hold back (threads-1) frames.
+    // No `-fflags nobuffer`: it discards the packets read while the stream is analysed,
+    // which cost every run its first GOP. Without it the decoder's steady-state latency
+    // measured the same; ffplay shares these flags and was not measured.
     let low = [
-        "-fflags",
-        "nobuffer",
         "-flags",
         "low_delay",
         "-probesize",
