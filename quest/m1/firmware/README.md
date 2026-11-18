@@ -1,4 +1,4 @@
-# [M] CatWAN firmware v6 image
+# CatWAN firmware v6 image
 
 ## Goal
 
