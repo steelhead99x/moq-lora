@@ -13,6 +13,6 @@ decoded, and `frame_no` is unauthenticated without `--key-file`. Found while fix
 `u32::MAX` stamp: replaying 30 objects plus one stamped `u32::MAX` reported `frames_expected`
 4294967296 and `video_frame_loss` 1.0. With the sender now reusing the last frame number for such
 an AU, the same replay delivers 31 objects against 30 expected and reports a loss of -0.033, so
-loss must count distinct frame numbers delivered, not objects. Count expected frames from frame numbers that advance
-plausibly from the previous one (bounded by the elapsed time and fps), and count the rest as
-rejected.
+loss must count distinct frame numbers delivered, not objects. Count expected frames from frame
+numbers that advance plausibly from the previous one (bounded by the elapsed time and fps), and
+count the rest as rejected.
