@@ -1,7 +1,7 @@
 //! SX1276 on the Dragino HAT, FSK RX (reverse direction: CatWAN -> Pi). The HAT glue is
 //! in `moq-lora-pi`.
 use anyhow::Result;
-use moq_lora_pi::{e, open_hat, Hat};
+use moq_lora_pi::{open_hat, sx_err, Hat};
 use sx1276::fsk::FskConfig;
 
 pub struct Radio {
@@ -17,7 +17,7 @@ impl Radio {
 
     /// Enter continuous FSK receive.
     pub fn start_rx(&mut self) -> Result<()> {
-        self.r.fsk_start_receive().map_err(e)
+        self.r.fsk_start_receive().map_err(sx_err)
     }
 
     /// Busy-poll the FIFO for frames > 63 B (the HAT wires no DIO1); returns a payload

@@ -184,7 +184,7 @@ The CRC function is now `write_crc`, which says what it does.
 ### The Pi GPIO glue was copied twice. Fixed.
 
 `moq-lora-send/src/radio.rs` and `moq-lora-recv/src/radio.rs` duplicated `CdevIrq` and
-`Radio::open`. Both now come from `moq-lora-pi` (`CdevIrq`, `open_hat`), moved verbatim:
+`Radio::open`. Both now come from `moq-lora-pi` (`CdevIrq`, `Hat`, `open_hat`, `sx_err`), moved verbatim:
 the same register writes in the same order. Each binary keeps only its own TX or RX
 methods, so the TX path is the code it was.
 
