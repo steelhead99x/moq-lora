@@ -707,7 +707,7 @@ fn main() -> Result<()> {
             }
         }
     }
-    if let Some(e) = re.flush() {
+    if let Some(e) = re.finish() {
         handle(e, unix_us())?;
     }
     let mut stats_line = String::new();

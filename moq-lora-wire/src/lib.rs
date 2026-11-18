@@ -558,8 +558,8 @@ pub struct Reassembler {
     /// may confirm as the start.
     starts: [Option<u16>; 2],
     /// Frames that fit their object (`ok`) or contradicted it (`bad`). Every CRC-valid frame
-    /// that is neither a duplicate nor `stale` lands in exactly one (a held frame once it
-    /// is confirmed); `late` and `stray` frames are counted there as well.
+    /// that is not a duplicate lands in exactly one of `ok`, `bad` and `stale`, once it is
+    /// no longer held; a `late` or `stray` frame is also counted in one of them.
     pub frames_ok: u64,
     /// Sequence numbers skipped. Loss assumes in-order delivery, which the radio gives: a
     /// frame that arrives late was already counted missing when its gap was seen.
@@ -574,25 +574,37 @@ pub struct Reassembler {
     /// receiver with it, as the bench scripts do.
     pub frames_stray: u64,
     /// Frames for an object behind the newest one started (replayed or very late), or far
-    /// ahead with nothing confirming them. They are not reassembled, so a replay can't
-    /// deliver an old object again or finalize the object in progress.
+    /// ahead and dropped from the hold unconfirmed (also at [`Reassembler::finish`]). They
+    /// are not reassembled, so a replay can't deliver an old object again or finalize the
+    /// object in progress.
     pub frames_stale: u64,
     pub fec_recovered: u64,
     /// The newest object a frame was placed for.
     newest: Option<(u16, u8)>,
-    /// Frames far ahead of `newest`, held until a frame confirms the jump.
+    /// Frames far ahead of `newest` (or any frame before the first is placed), held until
+    /// a frame confirms the jump.
     held: [Option<Vec<u8>>; 2],
+    /// `newest` came from a frame released on idle with nothing confirming it, so a
+    /// confirmed pair of frames anywhere may replace it.
+    tentative: bool,
 }
 
-/// Largest jump in group id a frame may make on its own: about a minute of GOPs at
-/// one per second. A frame further ahead is held until another frame confirms it.
-pub const GROUP_STEP: u16 = 64;
+/// Largest jump in group id a frame may make on its own. With [`OBJ_NEAR`], this bounds
+/// what one injected frame can cost to the rest of the current group and the next one
+/// or two: their frames then count as stale. A frame further ahead is held until the
+/// next frame confirms it, so a long honest outage costs nothing and an injected frame
+/// can't stall the stream.
+pub const GROUP_STEP: u16 = 2;
+
+/// Highest object id a frame from a later group may carry and be placed without
+/// confirmation (a new group starts at object 0; this allows for its first few lost).
+pub const OBJ_NEAR: u8 = 8;
 
 /// Where object `b` stands relative to object `a`.
 #[derive(PartialEq)]
 enum Pos {
     Same,
-    /// The same group further on, or up to `GROUP_STEP` groups ahead.
+    /// The same group further on, or an early object up to `GROUP_STEP` groups ahead.
     Ahead,
     FarAhead,
     Behind,
@@ -604,7 +616,7 @@ fn pos(a: (u16, u8), b: (u16, u8)) -> Pos {
         0 if b.1 == a.1 => Pos::Same,
         0 if b.1 > a.1 => Pos::Ahead,
         0 => Pos::Behind,
-        d if d <= GROUP_STEP => Pos::Ahead,
+        d if d <= GROUP_STEP && b.1 < OBJ_NEAR => Pos::Ahead,
         d if d < 0x8000 => Pos::FarAhead,
         _ => Pos::Behind,
     }
@@ -625,8 +637,17 @@ impl Reassembler {
             return ev; // duplicate
         }
         let key = (h.group, h.obj);
-        match self.newest.map_or(Pos::Ahead, |n| pos(n, key)) {
+        // Nothing is placed until a second frame confirms the first, so one injected
+        // frame can't set where the stream starts.
+        let at = self.newest.map_or(Pos::FarAhead, |n| pos(n, key));
+        let at = if self.tentative && at == Pos::Behind {
+            Pos::FarAhead
+        } else {
+            at
+        };
+        match at {
             Pos::Same | Pos::Ahead => {
+                self.tentative = false;
                 self.frames_stale += self.held.iter().flatten().count() as u64;
                 self.held = [None, None];
                 self.place_counted(h, pl, &mut ev);
@@ -645,6 +666,9 @@ impl Reassembler {
                         let held = self.held[i].take().unwrap();
                         self.frames_stale += self.held.iter().flatten().count() as u64;
                         self.held = [None, None];
+                        if self.tentative {
+                            (self.newest, self.tentative) = (None, false);
+                        }
                         let (hh, hpl) = FrameHdr::decode(&held).unwrap();
                         self.place_counted(hh, hpl, &mut ev);
                         self.place_counted(h, pl, &mut ev);
@@ -800,8 +824,33 @@ impl Reassembler {
         true
     }
 
-    /// Finalize the object in progress (call when the link has been idle a while).
+    /// End of stream: count frames still held as stale and finalize the object in
+    /// progress.
+    pub fn finish(&mut self) -> Option<Event> {
+        if self.newest.is_some() {
+            self.frames_stale += self.held.iter().flatten().count() as u64;
+            self.held = [None, None];
+        }
+        self.flush()
+    }
+
+    /// Finalize the object in progress (call when the link has been idle a while). Before
+    /// anything is placed, the last held frame is placed first, tentatively: a stream
+    /// that starts with a one-frame object and then pauses still delivers it.
     pub fn flush(&mut self) -> Option<Event> {
+        if self.newest.is_none() {
+            if let Some(f) = self.held[1].take().or_else(|| self.held[0].take()) {
+                self.frames_stale += self.held.iter().flatten().count() as u64;
+                self.held = [None, None];
+                let (h, pl) = FrameHdr::decode(&f).expect("held frames decode");
+                let mut ev = Vec::new();
+                self.place_counted(h, pl, &mut ev);
+                self.tentative = true;
+                if let Some(e) = ev.pop() {
+                    return Some(e); // a one-frame object, complete already
+                }
+            }
+        }
         let p = self.cur.take()?;
         self.done = Some((p.h.group, p.h.obj));
         let e = p.into_event();
@@ -977,6 +1026,10 @@ mod tests {
             for fr in f.fragment(3, o as u8, &d).unwrap() {
                 assert!(fr.len() <= MAX_FRAME);
                 got.extend(r.push(&fr));
+            }
+            if o == 0 {
+                // the very first frame waits for a second to confirm it, or for idle
+                got.extend(r.flush());
             }
             assert_eq!(
                 got.pop(),
@@ -1268,7 +1321,7 @@ mod tests {
         for fr in frames {
             ev.extend(r.push(fr));
         }
-        ev.extend(r.flush());
+        ev.extend(r.finish());
         ev.iter()
             .filter_map(|e| match e {
                 Event::Object { group, obj, .. } => Some((*group, *obj)),
@@ -1312,6 +1365,80 @@ mod tests {
         let mut r = Reassembler::new();
         assert_eq!(delivered(&mut r, &frames), keys);
         assert_eq!(r.frames_stale, 1);
+    }
+
+    /// Honest frames for `keys` with one frame for `inject` slipped in at `at`, the
+    /// sequence numbers continuing across it.
+    fn with_injection(keys: &[(u16, u8)], at: usize, inject: (u16, u8)) -> Vec<Vec<u8>> {
+        let mut frames: Vec<Vec<u8>> = objs(keys);
+        frames.insert(at, objs(&[inject]).remove(0));
+        frames
+            .iter()
+            .enumerate()
+            .map(|(i, f)| with_seq(f, i as u16))
+            .collect()
+    }
+
+    #[test]
+    fn one_injected_frame_before_the_stream_does_not_wedge_it() {
+        let keys: Vec<(u16, u8)> = (0..6u16)
+            .flat_map(|g| (0..3u8).map(move |o| (g, o)))
+            .collect();
+        for inject in [(20_000, 0), (100, 0), (3, 0), (0, 2)] {
+            let mut r = Reassembler::new();
+            let got = delivered(&mut r, &with_injection(&keys, 0, inject));
+            assert_eq!(got, keys, "injected {inject:?}");
+            assert_eq!(r.frames_stale, 1, "injected {inject:?}");
+        }
+    }
+
+    #[test]
+    fn one_injected_frame_mid_run_costs_at_most_a_few_groups() {
+        let keys: Vec<(u16, u8)> = (0..12u16)
+            .flat_map(|g| (0..3u8).map(move |o| (g, o)))
+            .collect();
+        for inject in [(66, 0), (9, 0), (2, 255), (40_000, 1)] {
+            let mut r = Reassembler::new();
+            let got = delivered(&mut r, &with_injection(&keys, 7, inject));
+            // groups 0..2 then frames from 2 onward: everything from group 5 arrives
+            assert!(
+                keys.iter().filter(|k| k.0 >= 5).all(|k| got.contains(k)),
+                "injected {inject:?}: {got:?}"
+            );
+            assert!(got.len() + 9 >= keys.len(), "injected {inject:?}: {got:?}");
+        }
+        // one far ahead is held and dropped: nothing lost
+        let mut r = Reassembler::new();
+        assert_eq!(delivered(&mut r, &with_injection(&keys, 7, (66, 0))), keys);
+        assert_eq!(r.frames_stale, 1);
+    }
+
+    #[test]
+    fn an_injected_frame_released_on_idle_does_not_wedge_the_stream() {
+        let keys: Vec<(u16, u8)> = (0..6u16)
+            .flat_map(|g| (0..3u8).map(move |o| (g, o)))
+            .collect();
+        let frames = with_injection(&keys, 0, (20_000, 0));
+        let mut r = Reassembler::new();
+        r.push(&frames[0]);
+        let mut got: Vec<(u16, u8)> = r
+            .flush()
+            .into_iter()
+            .filter_map(|e| match e {
+                Event::Object { group, obj, .. } => Some((group, obj)),
+                _ => None,
+            })
+            .collect();
+        got.extend(delivered(&mut r, &frames[1..]));
+        assert_eq!(got[1..], keys[..], "{got:?}");
+    }
+
+    #[test]
+    fn a_frame_still_held_at_the_end_counts_as_stale() {
+        let keys = [(0, 0), (0, 1), (0, 2)];
+        let mut r = Reassembler::new();
+        assert_eq!(delivered(&mut r, &with_injection(&keys, 3, (900, 0))), keys);
+        assert_eq!((r.frames_ok, r.frames_stale), (3, 1));
     }
 
     #[test]
