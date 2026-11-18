@@ -597,6 +597,7 @@ fn main() -> Result<()> {
         }
         Ok(())
     };
+    let mut port_closed = false;
     while t0.elapsed().as_secs_f64() < a.secs {
         match lrx.recv_timeout(Duration::from_millis(20)) {
             Ok((t, l)) => {
@@ -634,10 +635,12 @@ fn main() -> Result<()> {
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                if a.replay.is_some() {
-                    break;
+                if a.replay.is_none() {
+                    // Keep what we have: write the summary, then exit non-zero.
+                    eprintln!("serial port closed, stopping");
+                    port_closed = true;
                 }
-                bail!("serial port closed");
+                break;
             }
         }
         if last_rx.elapsed() > Duration::from_millis(150) {
@@ -660,8 +663,8 @@ fn main() -> Result<()> {
             std::thread::sleep(Duration::from_millis(5));
         }
     }
-    if let Some(mut wr) = port_w {
-        wr.write_all(b"S\n")?;
+    if let Some(mut wr) = port_w.filter(|_| !port_closed) {
+        let _ = wr.write_all(b"S\n");
         let t = Instant::now();
         while t.elapsed() < Duration::from_secs(2) {
             if let Ok((_, l)) = lrx.recv_timeout(Duration::from_millis(100)) {
@@ -710,7 +713,7 @@ fn main() -> Result<()> {
     let (dst, dworst) = stalls(&dtimes, a.stall_ms);
     let frames_expected = last_frame_no.saturating_sub(first_frame_no.unwrap_or(0)) as u64 + 1;
     let s = format!(
-        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"video_frame_loss\":{:.5},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{:.1},\"p95\":{:.1},\"max\":{:.1}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{:.1},\"p95\":{:.1},\"max\":{:.1}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{:.1},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"catwan\":\"{}\",\"decoded_flushed_at_end\":{flushed},\"cpu_pct_recv\":{:.1},\"cpu_pct_children\":{:.1},\"cpu_cores\":{}}}",
+        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"video_frame_loss\":{:.5},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{:.1},\"p95\":{:.1},\"max\":{:.1}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{:.1},\"p95\":{:.1},\"max\":{:.1}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{:.1},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"catwan\":\"{}\",\"decoded_flushed_at_end\":{flushed},\"cpu_pct_recv\":{:.1},\"cpu_pct_children\":{:.1},\"cpu_cores\":{},\"port_closed\":{port_closed}}}",
         a.profile, re.frames_ok, re.frames_missing, re.frames_bad,
         re.frames_missing as f64 / (re.frames_ok + re.frames_missing).max(1) as f64,
         re.fec_recovered, obj_times.len(),
@@ -729,6 +732,9 @@ fn main() -> Result<()> {
     );
     std::fs::write(format!("{}/summary.json", a.out), &s)?;
     println!("{s}");
+    if port_closed {
+        std::process::exit(1);
+    }
     Ok(())
 }
 
