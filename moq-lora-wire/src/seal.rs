@@ -174,8 +174,16 @@ pub const MAX_KEY_FILE: usize = 1024;
 pub fn read_key_file(path: &std::path::Path) -> Result<Vec<u8>, ReadKeyError> {
     use std::io::Read;
     // One handle for the check and the read, so the file cannot be swapped for a
-    // looser one in between.
-    let f = std::fs::File::open(path).map_err(ReadKeyError::Io)?;
+    // looser one in between. Opened non-blocking so a FIFO path fails the type check
+    // below instead of blocking until a writer appears.
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NONBLOCK);
+    }
+    let f = opts.open(path).map_err(ReadKeyError::Io)?;
     let meta = f.metadata().map_err(ReadKeyError::Io)?;
     if !meta.is_file() {
         return Err(ReadKeyError::Io(std::io::Error::new(
@@ -301,6 +309,15 @@ mod tests {
         assert!(read_key_file(&tight).is_ok());
         // a directory is refused through the same handle
         assert!(matches!(read_key_file(&dir), Err(ReadKeyError::Io(_))));
+        // a FIFO is refused at once, not waited on for a writer
+        let fifo = dir.join("fifo");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        // SAFETY: a valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert!(matches!(read_key_file(&fifo), Err(ReadKeyError::Io(_))));
+        // CRLF line endings are whitespace
+        std::fs::write(&tight, format!("{}\r\n{}\r\n", &hex[..32], &hex[32..])).unwrap();
+        assert!(read_key_file(&tight).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
