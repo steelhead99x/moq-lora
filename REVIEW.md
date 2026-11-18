@@ -184,11 +184,12 @@ reverse path 4 s. Folding them together would be a new harness, not a cleanup.
 `moq-lora-wire/src/lib.rs` had both `pub mod seal` (AEAD) and `pub fn seal` (CRC-16).
 The CRC function is now `write_crc`, which says what it does.
 
-### The Pi GPIO glue is copied twice. Deferred.
+### The Pi GPIO glue was copied twice. Fixed.
 
-`moq-lora-send/src/radio.rs` and `moq-lora-recv/src/radio.rs` duplicate `CdevIrq` and
-`Radio::open`. The receiver's unused `send` method was removed. Merging the two
-modules risks the TX path. Not merged.
+`moq-lora-send/src/radio.rs` and `moq-lora-recv/src/radio.rs` duplicated `CdevIrq` and
+`Radio::open`. Both now come from `moq-lora-pi` (`CdevIrq`, `Hat`, `open_hat`, `sx_err`), moved verbatim:
+the same register writes in the same order. Each binary keeps only its own TX or RX
+methods, so the TX path is the code it was.
 
 ### `localtime_r` failure is ignored. Deferred.
 
