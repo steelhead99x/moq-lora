@@ -145,10 +145,15 @@ impl Sink {
     /// Close the input, wait for the child, and return how many AUs it never got:
     /// refused by a full channel, or failed to write once the child stopped reading.
     fn close(&mut self, kill_after: Duration) -> u64 {
-        // Close the input, give the child `kill_after` to finish, then kill it, and only
-        // then join the writer: a child that stopped reading leaves the writer blocked on
-        // a full pipe until the child is gone.
+        // Close the input and give the writer `kill_after` to drain the backlog (up to 256
+        // AUs for a slow decoder), then the child `kill_after` to finish, then kill it, and
+        // only then join the writer: a child that stopped reading leaves the writer blocked
+        // on a full pipe until the child is gone.
         self.tx.take();
+        let t0 = Instant::now();
+        while self.th.as_ref().is_some_and(|t| !t.is_finished()) && t0.elapsed() < kill_after {
+            std::thread::sleep(Duration::from_millis(50));
+        }
         if let Some(mut c) = self.child.take() {
             let t0 = Instant::now();
             while !matches!(c.try_wait(), Ok(Some(_))) {
