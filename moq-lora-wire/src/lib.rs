@@ -194,7 +194,7 @@ pub fn crc16(data: &[u8]) -> u16 {
 /// End-to-end frame check. The radio's own CRC is not enough: when a packet fails CRC
 /// the SX1276 silently clears its FIFO, and a polled reader that already drained part of
 /// it can splice the start of the bad packet onto the next good one.
-pub fn seal(frame: &mut [u8]) {
+pub fn write_crc(frame: &mut [u8]) {
     frame[10] = 0;
     frame[11] = 0;
     let c = crc16(frame);
@@ -202,7 +202,7 @@ pub fn seal(frame: &mut [u8]) {
 }
 
 impl FrameHdr {
-    /// Header with a zero CRC field; call [`seal`] once the payload is appended.
+    /// Header with a zero CRC field; call [`write_crc`] once the payload is appended.
     pub fn encode(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.seq.to_be_bytes());
         out.extend_from_slice(&self.group.to_be_bytes());
@@ -406,7 +406,7 @@ impl Fragmenter {
         if f.len() < self.min_frame.min(MAX_FRAME) {
             f.resize(self.min_frame.min(MAX_FRAME), 0);
         }
-        seal(&mut f);
+        write_crc(&mut f);
         f
     }
 }
