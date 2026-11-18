@@ -141,6 +141,48 @@ fn open_serial(path: &str) -> Result<std::fs::File> {
     Ok(f)
 }
 
+/// How long one write to the CatWAN may wait for the stick to take it. The stick stops
+/// reading USB only while its 12-frame queue is full, which drains in about 100 ms.
+const CATWAN_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Write all of `buf` to a non-blocking `f` within `timeout`, or fail: a stick that
+/// stops reading must fail the write, not hang the sender past `--secs`.
+fn write_deadline(f: &mut std::fs::File, mut buf: &[u8], timeout: Duration) -> Result<()> {
+    use std::os::fd::AsRawFd;
+    let deadline = Instant::now() + timeout;
+    while !buf.is_empty() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            bail!("CatWAN stopped reading: write timed out after {timeout:?}");
+        }
+        let mut pfd = libc::pollfd {
+            fd: f.as_raw_fd(),
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        let ms = left.as_millis().clamp(1, i32::MAX as u128) as i32;
+        // SAFETY: one valid pollfd for the duration of the call.
+        if unsafe { libc::poll(&mut pfd, 1, ms) } < 0 {
+            let e = std::io::Error::last_os_error();
+            if e.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(e.into());
+        }
+        match f.write(buf) {
+            Ok(0) => bail!("CatWAN write returned 0"),
+            Ok(n) => buf = &buf[n..],
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+
 /// Configure the CatWAN for FSK TX; returns the write half and a counter of the TX
 /// errors the stick reports. A reader thread drains the stick's replies (B/D/ERR lines)
 /// so its output buffer never fills.
@@ -150,8 +192,15 @@ fn open_catwan(
     p: &moq_lora_wire::FskProfile,
     power: i8,
 ) -> Result<(std::fs::File, Arc<AtomicU64>)> {
+    use std::os::unix::fs::OpenOptionsExt;
     let f = open_serial(port)?;
-    let mut w = f.try_clone()?;
+    // Writes go through their own non-blocking open file, so the deadline doesn't make
+    // the reader thread's blocking reads fail (a cloned fd would share O_NONBLOCK).
+    let mut w = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK)
+        .open(port)
+        .with_context(|| format!("open {port} for writing"))?;
     let (tx, rx) = mpsc::channel::<String>();
     let errs = Arc::new(AtomicU64::new(0));
     let errs_rd = errs.clone();
@@ -171,7 +220,7 @@ fn open_catwan(
         }
     });
     let mut cmd = |c: &str, want: &str| -> Result<String> {
-        w.write_all(format!("{c}\n").as_bytes())?;
+        write_deadline(&mut w, format!("{c}\n").as_bytes(), CATWAN_WRITE_TIMEOUT)?;
         let t0 = Instant::now();
         while t0.elapsed() < Duration::from_secs(3) {
             if let Ok(l) = rx.recv_timeout(Duration::from_millis(100)) {
@@ -216,14 +265,15 @@ impl Link {
             #[cfg(target_os = "linux")]
             Link::Radio(r) => r.send(fr),
             Link::Catwan { w, .. } => {
-                let mut l = Vec::with_capacity(4 + 2 * fr.len());
-                l.extend_from_slice(b"Q ");
+                // The leading newline ends whatever a timed-out write left half sent, so
+                // the stick never parses it with this frame; it ignores empty lines.
+                let mut l = Vec::with_capacity(5 + 2 * fr.len());
+                l.extend_from_slice(b"\nQ ");
                 for b in fr {
                     l.extend_from_slice(format!("{b:02x}").as_bytes());
                 }
                 l.push(b'\n');
-                w.write_all(&l)?;
-                Ok(())
+                write_deadline(w, &l, CATWAN_WRITE_TIMEOUT)
             }
             Link::Loop { f, toa, t0 } => {
                 std::thread::sleep(*toa);
@@ -240,6 +290,59 @@ struct TxObj {
     cap_us: u64,
     started: bool,
     frames: VecDeque<Vec<u8>>,
+}
+
+/// Objects and groups the assembler dropped because the TX queue was full.
+#[derive(Default)]
+struct QueueDrops {
+    objects: u64,
+    groups: u64,
+    /// Group whose remaining objects are dropped as they arrive.
+    group: Option<u16>,
+}
+
+/// Frames the TX queue may hold: twice what the radio sends in `--max-age-ms`, which
+/// is more than a live link ever queues (the measured runs peaked near 50), and at
+/// least 64.
+fn queue_cap_frames(max_age_us: u64, frame_toa_us: u64) -> usize {
+    (2 * max_age_us / frame_toa_us.max(1)).max(64) as usize
+}
+
+/// Queue `o`, keeping at most `cap` frames. When full, whole groups are dropped,
+/// oldest first and never the object on air, as a MoQ relay drops a stale group; if
+/// that is not enough, the new object's group goes too, including its later objects.
+/// Staleness is still checked when the radio thread reaches an object; this bounds
+/// memory when the radio thread is stuck and never reaches one.
+fn push_bounded(q: &mut VecDeque<TxObj>, o: TxObj, cap: usize, d: &mut QueueDrops) {
+    if d.group.is_some_and(|g| g != o.group) {
+        d.group = None;
+    }
+    if d.group == Some(o.group) {
+        d.objects += 1;
+        return;
+    }
+    let queued = |q: &VecDeque<TxObj>| q.iter().map(|x| x.frames.len()).sum::<usize>();
+    while queued(q) + o.frames.len() > cap {
+        let Some(g) = q.iter().find(|x| !x.started).map(|x| x.group) else {
+            break;
+        };
+        let before = q.len();
+        q.retain(|x| x.started || x.group != g);
+        d.objects += (before - q.len()) as u64;
+        d.groups += 1;
+        if g == o.group {
+            d.group = Some(g);
+            d.objects += 1;
+            return;
+        }
+    }
+    if queued(q) + o.frames.len() > cap {
+        d.group = Some(o.group);
+        d.groups += 1;
+        d.objects += 1;
+        return;
+    }
+    q.push_back(o);
 }
 
 #[derive(Default)]
@@ -525,6 +628,8 @@ fn main() -> Result<()> {
     let q: Arc<(Mutex<VecDeque<TxObj>>, Condvar)> = Arc::default();
     let done = Arc::new(AtomicBool::new(false));
     let max_age = a.max_age_ms * 1000;
+    let queue_cap = queue_cap_frames(max_age, frame_toa_us);
+    let mut qdrops = QueueDrops::default();
     let tx_thread = {
         let (q, done, stop) = (q.clone(), done.clone(), stop.clone());
         std::thread::spawn(move || -> (TxStats, Link, f64, bool) {
@@ -680,12 +785,17 @@ fn main() -> Result<()> {
             objects += 1;
             au_bytes += au.len() as u64;
             let (m, cv) = &*q;
-            m.lock().unwrap().push_back(TxObj {
-                group,
-                cap_us,
-                started: false,
-                frames: frames.into(),
-            });
+            push_bounded(
+                &mut m.lock().unwrap(),
+                TxObj {
+                    group,
+                    cap_us,
+                    started: false,
+                    frames: frames.into(),
+                },
+                queue_cap,
+                &mut qdrops,
+            );
             cv.notify_one();
             Ok(())
         };
@@ -732,16 +842,16 @@ fn main() -> Result<()> {
     }
     if let Link::Catwan { w, .. } = &mut link {
         std::thread::sleep(Duration::from_millis(300)); // let the stick drain its queue
-        let _ = w.write_all(b"S\n");
+        let _ = write_deadline(w, b"\nS\n", CATWAN_WRITE_TIMEOUT);
     }
     st.tx_errors += link.take_stick_errors();
     drop(log);
     let (cpu_self, cpu_child) = (cpu_s(libc::RUSAGE_SELF), cpu_s(libc::RUSAGE_CHILDREN));
     let objs = objects.max(1) as f64;
     println!(
-        "{{\"role\":\"send\",\"profile\":\"{}\",\"freq_hz\":{freq_hz},\"power_dbm\":{},\"size\":\"{}\",\"fps\":{},\"gop\":{},\"encoder\":\"{}\",\"bitrate_target\":{},\"fec_k\":{},\"min_frame\":{},\"wall_s\":{wall:.2},\"captured\":{captured},\"objects\":{objects},\"keyframes\":{keys},\"video_bps\":{:.0},\"frames_tx\":{},\"bytes_tx\":{},\"radio_busy_pct\":{:.1},\"air_bps\":{:.0},\"objects_dropped\":{},\"groups_dropped\":{},\"tx_errors\":{},\"max_queue_frames\":{},\"cipher\":\"{}\",\"au_bytes\":{au_bytes},\"object_bytes\":{obj_bytes},\"overhead_per_object\":{{\"objhdr\":{},\"aead\":{},\"frame_headers_crc\":{:.1},\"padding_parity\":{:.1},\"total_air\":{:.1}}},\"seal_us_per_object\":{:.1},\"cpu_pct_sender\":{:.1},\"cpu_pct_ffmpeg\":{:.1},\"cpu_pct_total\":{:.1},\"cpu_cores\":{},\"link\":\"{}\",\"tx_fatal\":{tx_fatal},\"encoder_ok\":{enc_ok},\"aus_without_capture\":{uncaptured},\"gop_overrun\":{gop_overrun}}}",
+        "{{\"role\":\"send\",\"profile\":\"{}\",\"freq_hz\":{freq_hz},\"power_dbm\":{},\"size\":\"{}\",\"fps\":{},\"gop\":{},\"encoder\":\"{}\",\"bitrate_target\":{},\"fec_k\":{},\"min_frame\":{},\"wall_s\":{wall:.2},\"captured\":{captured},\"objects\":{objects},\"keyframes\":{keys},\"video_bps\":{:.0},\"frames_tx\":{},\"bytes_tx\":{},\"radio_busy_pct\":{:.1},\"air_bps\":{:.0},\"objects_dropped\":{},\"groups_dropped\":{},\"tx_errors\":{},\"max_queue_frames\":{},\"queue_cap_frames\":{queue_cap},\"objects_dropped_queue_full\":{},\"groups_dropped_queue_full\":{},\"cipher\":\"{}\",\"au_bytes\":{au_bytes},\"object_bytes\":{obj_bytes},\"overhead_per_object\":{{\"objhdr\":{},\"aead\":{},\"frame_headers_crc\":{:.1},\"padding_parity\":{:.1},\"total_air\":{:.1}}},\"seal_us_per_object\":{:.1},\"cpu_pct_sender\":{:.1},\"cpu_pct_ffmpeg\":{:.1},\"cpu_pct_total\":{:.1},\"cpu_cores\":{},\"link\":\"{}\",\"tx_fatal\":{tx_fatal},\"encoder_ok\":{enc_ok},\"aus_without_capture\":{uncaptured},\"gop_overrun\":{gop_overrun}}}",
         a.profile, a.power, a.size, a.fps, a.gop, a.encoder, a.bitrate, a.fec_k, a.min_frame, au_bytes as f64 * 8.0 / wall, st.frames, st.bytes,
-        100.0 * busy / wall, st.bytes as f64 * 8.0 / wall, st.objects_dropped, st.groups_dropped, st.tx_errors, st.max_queue_frames,
+        100.0 * busy / wall, st.bytes as f64 * 8.0 / wall, st.objects_dropped, st.groups_dropped, st.tx_errors, st.max_queue_frames, qdrops.objects, qdrops.groups,
         sealer.as_ref().map(|x| x.cipher.name()).unwrap_or("none"),
         moq_lora_wire::OBJ_HDR_LEN,
         if sealer.is_some() { seal::OVERHEAD } else { 0 },
@@ -766,7 +876,58 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{advance, next_capture};
+    use super::{advance, next_capture, push_bounded, queue_cap_frames, QueueDrops, TxObj};
+    use std::collections::VecDeque as Q;
+
+    fn obj(group: u16, frames: usize, started: bool) -> TxObj {
+        TxObj {
+            group,
+            cap_us: 0,
+            started,
+            frames: (0..frames).map(|_| vec![0u8; 8]).collect(),
+        }
+    }
+    fn groups(q: &Q<TxObj>) -> Vec<u16> {
+        q.iter().map(|o| o.group).collect()
+    }
+
+    #[test]
+    fn full_queue_drops_whole_groups_oldest_first() {
+        let (mut q, mut d) = (Q::new(), QueueDrops::default());
+        for g in [1, 1, 2, 2, 3] {
+            push_bounded(&mut q, obj(g, 4, false), 20, &mut d);
+        }
+        assert_eq!(groups(&q), [1, 1, 2, 2, 3]); // 20 frames: at the cap
+        push_bounded(&mut q, obj(3, 4, false), 20, &mut d);
+        assert_eq!(groups(&q), [2, 2, 3, 3]); // group 1 went, whole
+        assert_eq!((d.objects, d.groups), (2, 1));
+    }
+
+    #[test]
+    fn object_on_air_is_kept_and_a_stuck_queue_stays_bounded() {
+        let (mut q, mut d) = (Q::new(), QueueDrops::default());
+        push_bounded(&mut q, obj(1, 10, true), 12, &mut d); // on air
+        push_bounded(&mut q, obj(1, 4, false), 12, &mut d);
+        // the only droppable group is the new object's own: drop it and its rest
+        assert_eq!(groups(&q), [1]);
+        push_bounded(&mut q, obj(1, 1, false), 12, &mut d);
+        assert_eq!(groups(&q), [1]); // rest of a dropped group
+        push_bounded(&mut q, obj(2, 2, false), 12, &mut d); // next group fits
+        assert_eq!(groups(&q), [1, 2]);
+        // radio stuck forever: the queue never passes the cap
+        for i in 0..10_000u32 {
+            push_bounded(&mut q, obj(3 + (i / 15) as u16, 3, false), 12, &mut d);
+            assert!(q.iter().map(|o| o.frames.len()).sum::<usize>() <= 12);
+        }
+        assert!(q[0].started);
+    }
+
+    #[test]
+    fn cap_is_above_what_a_live_link_queues() {
+        // 300 kbit/s, 6-byte preamble: about 7 ms per 255-byte frame
+        assert_eq!(queue_cap_frames(1_000_000, 7_093), 281);
+        assert_eq!(queue_cap_frames(10_000, 7_093), 64);
+    }
 
     #[test]
     fn only_a_keyframe_opens_a_group() {
