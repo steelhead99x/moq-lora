@@ -8,6 +8,40 @@ FEC k=8, 96 B minimum frame, max object age 1000 ms. CatWAN firmware v5
 (`firmware/catwan-fw-v5.uf2`, sha256 fe86cc05...). rind main d2dc35bd796aaadc42df56aee0f1526cdee94b66,
 ChaCha20-Poly1305. Antennas ~1 m apart, indoors.
 
+The results are in [table.md](table.md). The README shows the four forward runs in short form.
+
+## Reading the columns
+
+* **video kbit/s**: H.264 that reached the player, after the receiver dropped broken GOPs.
+* **radio goodput**: bytes per second of radio frames received, including headers, padding and parity.
+* **radio frame loss**: radio frames missing, counted by sequence number.
+* **obj lost**: video frames that FEC couldn't repair.
+* **video frame loss**: frames that never reached the player, either lost or dropped with the rest of their GOP.
+* **obj lat**: from capture on the sender to the frame being complete on the receiver.
+* **g2g**: from capture to the frame being decoded on the receiver, read from the barcode in the
+  picture. It includes the one frame (~67 ms) that the ffmpeg CLI decoder holds back.
+  Both latencies are corrected for the clock difference between the machines, using a clock check every 5 s.
+* **stalls**: gaps over 250 ms between delivered frames (obj) and between decoded frames (dec).
+* **Pi CPU**: percent of one Cortex-A7 core (the Pi 2 has four). For Pi to laptop runs this is the
+  sender plus its ffmpeg. For laptop to Pi it's the receiver, which keeps checking the radio
+  because the HAT can't signal that data has arrived, plus the ffmpeg decoder.
+* **bytes/obj**: what encryption adds per frame, and everything sent on air beyond the H.264
+  itself: object header, encryption, 12 B per radio frame, padding and parity.
+
+## What got it here
+
+Fixes made along the way. All Pi to laptop at 300 kbit/s, 330 s runs.
+
+| change | before | after |
+|---|---|---|
+| equal-size fragments + 96 B minimum frame (short frames right after long ones were getting lost) | 0.27% radio frame loss | 0.05% |
+| end-to-end CRC-16 per radio frame (the receiver could splice two frames into one that passed the radio's CRC) | corrupt AUs reached the decoder | 0 (rejected and counted) |
+| AUD appended after each AU | decoder held 2 frames | 1 frame |
+| stick firmware v3 to v4 (faster hex output), FEC k=8 | 1.5% video frame loss, 6 GOPs cut | 0.28%, 1 GOP cut |
+| stick firmware v3 to v4, no FEC | 6.2% video frame loss, 22 GOPs cut | 4.8%, 22 GOPs cut |
+| stick firmware v4 to v5 (per-packet TX timeout), laptop to Pi | stream corrupt after 60 s | 330 s runs as in the table |
+| x264 instead of the Pi's hardware encoder | ~275 ms encoder delay | ~20-24 ms |
+
 ## Exact commands
 
 Machine-specific paths from the bench machine are written here as variables. Set them to
