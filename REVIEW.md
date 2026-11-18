@@ -55,8 +55,8 @@ object can still complete today). Not changed.
 
 ### Radio headers and FEC are outside the AEAD. By design.
 
-`moq-lora-wire/src/seal.rs` binds only `group` and `obj` as AAD. The nonce is
-`session | group | obj | 0`. Sequence number, fragment index, `nfrag`, the parity bit,
+`moq-lora-wire/src/seal.rs` binds only `group` and `obj` as AAD; the nonce is built
+from the run's id, `group` and `obj`. Sequence number, fragment index, `nfrag`, the parity bit,
 `k`, and `objlen` are clear and unauthenticated. What that lets an on-path attacker do,
 with `--key-file`:
 
@@ -67,7 +67,10 @@ with `--key-file`:
   fake a gap (one frame can add at most `SEQ_STEP - 1`; see `moq-lora-wire/src/lib.rs`).
   The video itself is unaffected.
 
-It cannot read or alter the picture. Authenticating the headers would cost a tag on
+It cannot read the picture or make altered content authenticate: any change to how
+fragments reassemble changes the sealed bytes and fails the tag. It can replay recorded
+objects at their original position, which the previous section covers. The headers also
+show object sizes, so keyframe timing is visible. Authenticating the headers would cost a tag on
 every radio frame (16 bytes, about 6% of airtime, or 4 bytes truncated, about 1.6%) and
 a wire change, to protect only statistics. Decided 2026-11-18 (maintainer): keep the
 headers clear. Without `--key-file` nothing is authenticated and an attacker can inject
