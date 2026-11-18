@@ -1,11 +1,17 @@
 name: ci
 
 on:
+  # Pull requests get one run; pushes are only built on main (a PR branch used to run twice).
   push:
+    branches: [main]
+  # Drafts are skipped: a quest claim is a draft holding an empty commit, and checks
+  # run locally until the PR is ready, so marking it ready starts the run.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 jobs:
   host:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,6 +28,7 @@ jobs:
         run: cargo build --release
 
   sx1276:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,6 +43,7 @@ jobs:
           cargo test --all-targets
 
   armv7:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +58,7 @@ jobs:
         run: cargo build --release -p moq-lora-send -p moq-lora-recv --target armv7-unknown-linux-gnueabihf
 
   firmware:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
