@@ -7,11 +7,8 @@ A push to a pull request branch runs each job once, not once for `push` and once
 
 ## Plan
 
-Limit `push` to `main`. Skipping draft PRs, as Quest's setup recommends, is a separate
-decision for the maintainer, under Waiting.
+Limit `push` to `main`, and skip draft PRs: add `ready_for_review` to the `pull_request` types
+and give each job `if: github.event_name != 'pull_request' || github.event.pull_request.draft == false`.
 
-## Waiting
-
-- Maintainer: also skip CI on draft PRs, as Quest's setup recommends (add `ready_for_review` to the
-  `pull_request` types and a `draft == false` condition per job)? Recommended: yes, since every
-  quest claim is a draft holding an empty commit.
+Decided 2026-11-18 (maintainer): ✅ skip CI on drafts, as Quest's setup recommends, since every quest
+claim is a draft holding an empty commit (rejected: run CI on drafts too).
