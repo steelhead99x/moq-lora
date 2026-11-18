@@ -107,7 +107,8 @@ Parts list and pinouts are in the [HOWTO](HOWTO.md#1-hardware).
 
 ## Radio rules
 
-915.0 MHz, +5 dBm (about 3 mW). The tools refuse to transmit at anything else, and they won't
+The tools default to 915.0 MHz at +5 dBm (about 3 mW). They refuse anything outside 902-928 MHz
+and anything within 0.3 MHz of 925.0 MHz, the sender refuses power outside 2 to 5 dBm, and it won't
 transmit at all without `--i-have-an-antenna`. 915 MHz is a licence-free band in the Americas,
 but **not in Europe and many other places**. You are responsible for what you transmit.
 Details in the [HOWTO](HOWTO.md#9-radio-rules).

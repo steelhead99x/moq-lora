@@ -215,7 +215,8 @@ More detail is in [scripts/README.md](scripts/README.md). The meaning of each co
 ## 9. Radio rules
 
 * **915.0 MHz, +5 dBm (about 3 mW).** The sender and receiver refuse anything outside
-  902-928 MHz, anything above +5 dBm, and 925.0 MHz.
+  902-928 MHz and anything within 0.3 MHz of 925.0 MHz; the sender also refuses power outside 2 to
+  5 dBm.
 * **Always attach an antenna** before transmitting. Transmitting without one can damage the radio.
 * **915 MHz is licence-free in the Americas, not everywhere.** Europe uses 868 MHz, with duty-cycle
   limits this link breaks. Check your local rules.

@@ -1,6 +1,6 @@
 #!/bin/bash
 # The matched rind off/on matrix from README: both directions, 300k and 350k(x), FEC k=8, 330 s each.
-# LKEY = key file on the laptop, PKEY = the same key on the Pi (see HOWTO section 7).
+# LKEY = key file on the laptop, PKEY = the same key on the Pi (see "Encryption" in HOWTO section 8).
 set -u; D=$(dirname "$0")
 : "${LKEY:=$HOME/moq-lora-key.hex}" "${PKEY:=moq-lora-key.hex}" "${S:=330}"
 source "$D/env.sh"
