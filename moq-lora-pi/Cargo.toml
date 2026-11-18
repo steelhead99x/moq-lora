@@ -1,0 +1,16 @@
+[package]
+name = "moq-lora-pi"
+version = "0.1.0"
+description = "Pi glue shared by moq-lora-send and moq-lora-recv: the Dragino HAT's SX1276 over spidev and GPIO cdev"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[target.'cfg(target_os = "linux")'.dependencies]
+anyhow = "1"
+libc = "0.2"
+sx1276 = { path = "../vendor/sx1276" }
+embedded-hal-bus = "0.3"
+linux-embedded-hal = { version = "0.5", default-features = false, features = ["gpio_cdev", "spi"] }
