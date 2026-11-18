@@ -558,8 +558,8 @@ pub struct Reassembler {
     /// may confirm as the start.
     starts: [Option<u16>; 2],
     /// Frames that fit their object (`ok`) or contradicted it (`bad`). Every CRC-valid frame
-    /// that is not a duplicate lands in exactly one; `late` and `stray` frames are counted
-    /// there as well.
+    /// that is neither a duplicate nor `stale` lands in exactly one (a held frame once it
+    /// is confirmed); `late` and `stray` frames are counted there as well.
     pub frames_ok: u64,
     /// Sequence numbers skipped. Loss assumes in-order delivery, which the radio gives: a
     /// frame that arrives late was already counted missing when its gap was seen.
@@ -573,7 +573,41 @@ pub struct Reassembler {
     /// so a sender that restarts its counter mid-run is not followed: restart the
     /// receiver with it, as the bench scripts do.
     pub frames_stray: u64,
+    /// Frames for an object behind the newest one started (replayed or very late), or far
+    /// ahead with nothing confirming them. They are not reassembled, so a replay can't
+    /// deliver an old object again or finalize the object in progress.
+    pub frames_stale: u64,
     pub fec_recovered: u64,
+    /// The newest object a frame was placed for.
+    newest: Option<(u16, u8)>,
+    /// Frames far ahead of `newest`, held until a frame confirms the jump.
+    held: [Option<Vec<u8>>; 2],
+}
+
+/// Largest jump in group id a frame may make on its own: about a minute of GOPs at
+/// one per second. A frame further ahead is held until another frame confirms it.
+pub const GROUP_STEP: u16 = 64;
+
+/// Where object `b` stands relative to object `a`.
+#[derive(PartialEq)]
+enum Pos {
+    Same,
+    /// The same group further on, or up to `GROUP_STEP` groups ahead.
+    Ahead,
+    FarAhead,
+    Behind,
+}
+
+fn pos(a: (u16, u8), b: (u16, u8)) -> Pos {
+    let d = b.0.wrapping_sub(a.0);
+    match d {
+        0 if b.1 == a.1 => Pos::Same,
+        0 if b.1 > a.1 => Pos::Ahead,
+        0 => Pos::Behind,
+        d if d <= GROUP_STEP => Pos::Ahead,
+        d if d < 0x8000 => Pos::FarAhead,
+        _ => Pos::Behind,
+    }
 }
 
 impl Reassembler {
@@ -590,13 +624,55 @@ impl Reassembler {
         if !self.track_seq(h.seq) {
             return ev; // duplicate
         }
-        // Each frame lands in exactly one of frames_ok and frames_bad.
-        if self.place(h, pl, &mut ev) {
+        let key = (h.group, h.obj);
+        match self.newest.map_or(Pos::Ahead, |n| pos(n, key)) {
+            Pos::Same | Pos::Ahead => {
+                self.frames_stale += self.held.iter().flatten().count() as u64;
+                self.held = [None, None];
+                self.place_counted(h, pl, &mut ev);
+            }
+            Pos::Behind => self.frames_stale += 1,
+            Pos::FarAhead => {
+                let held_key = |f: &Vec<u8>| FrameHdr::decode(f).map(|(x, _)| (x.group, x.obj));
+                let confirms = self.held.iter().position(|f| {
+                    f.as_ref()
+                        .and_then(held_key)
+                        .is_some_and(|k| matches!(pos(k, key), Pos::Same | Pos::Ahead))
+                });
+                match confirms {
+                    Some(i) => {
+                        // the jump is real: place the held frame first, then this one
+                        let held = self.held[i].take().unwrap();
+                        self.frames_stale += self.held.iter().flatten().count() as u64;
+                        self.held = [None, None];
+                        let (hh, hpl) = FrameHdr::decode(&held).unwrap();
+                        self.place_counted(hh, hpl, &mut ev);
+                        self.place_counted(h, pl, &mut ev);
+                    }
+                    None => {
+                        self.frames_stale += self.held[0].is_some() as u64;
+                        self.held = [self.held[1].take(), Some(frame.to_vec())];
+                    }
+                }
+            }
+        }
+        ev
+    }
+
+    /// Place a frame and count it in exactly one of frames_ok and frames_bad.
+    fn place_counted(&mut self, h: FrameHdr, pl: &[u8], ev: &mut Vec<Event>) {
+        let key = (h.group, h.obj);
+        if self
+            .newest
+            .is_none_or(|n| matches!(pos(n, key), Pos::Ahead | Pos::FarAhead))
+        {
+            self.newest = Some(key);
+        }
+        if self.place(h, pl, ev) {
             self.frames_ok += 1;
         } else {
             self.frames_bad += 1;
         }
-        ev
     }
 
     /// Loss accounting for one frame's sequence number; false for a duplicate.
@@ -1153,6 +1229,73 @@ mod tests {
         assert_eq!((r.frames_missing, r.frames_stray), (0, 1));
         // the first two frames still count a real gap between them
         assert_eq!(account(&[5, 7, 8]).frames_missing, 1);
+    }
+
+    /// One-frame objects, group g object o, numbered by `Fragmenter` from `seq0`.
+    fn objs(keys: &[(u16, u8)]) -> Vec<Vec<u8>> {
+        let mut f = Fragmenter::new(0).unwrap();
+        keys.iter()
+            .map(|&(g, o)| f.fragment(g, o, &obj(40, o)).unwrap().remove(0))
+            .collect()
+    }
+    fn delivered(r: &mut Reassembler, frames: &[Vec<u8>]) -> Vec<(u16, u8)> {
+        let mut ev = vec![];
+        for fr in frames {
+            ev.extend(r.push(fr));
+        }
+        ev.extend(r.flush());
+        ev.iter()
+            .filter_map(|e| match e {
+                Event::Object { group, obj, .. } => Some((*group, *obj)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn replayed_old_frames_neither_break_nor_reenter_reassembly() {
+        // groups 0..4 of 3 objects; frames from group 0 replayed into group 3
+        let keys: Vec<(u16, u8)> = (0..5u16)
+            .flat_map(|g| (0..3u8).map(move |o| (g, o)))
+            .collect();
+        let honest = objs(&keys);
+        let mut frames = honest[..10].to_vec();
+        for (i, old) in honest.iter().take(3).enumerate() {
+            frames.push(with_seq(old, 100 + i as u16)); // old objects, near seq
+        }
+        frames.extend(honest[10..].iter().cloned());
+        let mut r = Reassembler::new();
+        let got = delivered(&mut r, &frames);
+        assert_eq!(got, keys, "an old object re-entered or broke the stream");
+        assert_eq!(r.frames_stale, 3);
+    }
+
+    #[test]
+    fn one_far_future_frame_does_not_stop_the_stream() {
+        let keys: Vec<(u16, u8)> = (0..4u16)
+            .flat_map(|g| (0..3u8).map(move |o| (g, o)))
+            .collect();
+        let honest = objs(&keys);
+        let mut frames = honest[..5].to_vec();
+        let mut far = objs(&[(20_000, 0)]).remove(0);
+        far = with_seq(&far, 5); // fits the seq stream; only its object key is wrong
+        frames.push(far);
+        frames.extend(honest[5..].iter().map(|f| {
+            let s = u16::from_be_bytes([f[0], f[1]]) + 1;
+            with_seq(f, s)
+        }));
+        let mut r = Reassembler::new();
+        assert_eq!(delivered(&mut r, &frames), keys);
+        assert_eq!(r.frames_stale, 1);
+    }
+
+    #[test]
+    fn a_long_outage_is_confirmed_and_its_first_frame_kept() {
+        // group 0, then nothing until group 500 (beyond GROUP_STEP): both objects arrive
+        let keys = [(0, 0), (0, 1), (500, 0), (500, 1)];
+        let mut r = Reassembler::new();
+        assert_eq!(delivered(&mut r, &objs(&keys)), keys);
+        assert_eq!(r.frames_stale, 0);
     }
 
     #[test]
