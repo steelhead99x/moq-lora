@@ -23,9 +23,10 @@ scripts/rev.sh   NAME 300000:100000:12 330 --fec-k 8
 scripts/bench.sh
 ```
 
-`RX="--key-file $PKEY"` (forward) or `RX="--key-file $LKEY"` (reverse) adds
-receiver arguments. Key paths must not contain spaces. Sender arguments are
-quoted for the remote shell; a key path still has to be a single argument.
+`RX_KEY` is the receiver's key file: `RX_KEY="$LKEY"` for `run2.sh` (the
+receiver is the laptop) and `RX_KEY="$PKEY"` for `rev.sh` (the receiver is the
+Pi). It is quoted on both sides of ssh, so the path may contain spaces, as may
+any sender argument. `RX` adds other receiver arguments and is split on spaces.
 
 The published runs used an ssh alias and a macOS `cu.usbmodem*` port. Those
 values are not defaults here. Set `PI` and `PORT` to your own.

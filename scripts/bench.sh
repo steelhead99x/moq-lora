@@ -8,9 +8,9 @@ source "$D/env.sh"
 trap 'touch "$RUNS/clocklog.stop"; wait $CL' EXIT
 for br in 300 350; do
   if [ $br = 300 ]; then FP=300000:100000:6; RP=300000:100000:12; else FP=350000:100000:6:x; RP=350000:100000:14:x; fi
-  RX=""                 "$D/run2.sh" f${br}_off "$FP" "$S" --fec-k 8
-  RX="--key-file $LKEY" "$D/run2.sh" f${br}_on  "$FP" "$S" --fec-k 8 --key-file "$PKEY"
-  RX=""                 "$D/rev.sh"  r${br}_off "$RP" "$S" --fec-k 8
-  RX="--key-file $PKEY" "$D/rev.sh"  r${br}_on  "$RP" "$S" --fec-k 8 --key-file "$LKEY"
+  RX_KEY=""      "$D/run2.sh" f${br}_off "$FP" "$S" --fec-k 8
+  RX_KEY="$LKEY" "$D/run2.sh" f${br}_on  "$FP" "$S" --fec-k 8 --key-file "$PKEY"
+  RX_KEY=""      "$D/rev.sh"  r${br}_off "$RP" "$S" --fec-k 8
+  RX_KEY="$PKEY" "$D/rev.sh"  r${br}_on  "$RP" "$S" --fec-k 8 --key-file "$LKEY"
 done
 echo BENCH_DONE
