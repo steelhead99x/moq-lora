@@ -17,7 +17,7 @@ use moq_lora_wire::{
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -109,8 +109,13 @@ enum Link {
         t0: Instant,
     },
     /// CatWAN USB CDC: `Q <hex>` per frame; the firmware stops reading USB while its
-    /// 12-frame TX queue is full, so writes block = natural backpressure.
-    Catwan { w: std::fs::File },
+    /// 12-frame TX queue is full, so writes block = natural backpressure. `errs` counts
+    /// the stick's `ERR tx` / `ERR txtimeout` lines; `seen` is how many were reported.
+    Catwan {
+        w: std::fs::File,
+        errs: Arc<AtomicU64>,
+        seen: u64,
+    },
 }
 
 fn open_serial(path: &str) -> Result<std::fs::File> {
@@ -136,17 +141,20 @@ fn open_serial(path: &str) -> Result<std::fs::File> {
     Ok(f)
 }
 
-/// Configure the CatWAN for FSK TX; returns the write half. A reader thread drains the
-/// stick's replies (B/D/ERR lines) so its output buffer never fills.
+/// Configure the CatWAN for FSK TX; returns the write half and a counter of the TX
+/// errors the stick reports. A reader thread drains the stick's replies (B/D/ERR lines)
+/// so its output buffer never fills.
 fn open_catwan(
     port: &str,
     freq_hz: u32,
     p: &moq_lora_wire::FskProfile,
     power: i8,
-) -> Result<std::fs::File> {
+) -> Result<(std::fs::File, Arc<AtomicU64>)> {
     let f = open_serial(port)?;
     let mut w = f.try_clone()?;
     let (tx, rx) = mpsc::channel::<String>();
+    let errs = Arc::new(AtomicU64::new(0));
+    let errs_rd = errs.clone();
     std::thread::spawn(move || {
         let mut r = std::io::BufReader::new(f);
         while let Ok(Some(line)) = read_line_limited(&mut r, MAX_SERIAL_LINE) {
@@ -154,6 +162,9 @@ fn open_catwan(
                 continue; // oversize reply is not a config response
             };
             let l = String::from_utf8_lossy(&buf);
+            if l.starts_with("ERR tx") {
+                errs_rd.fetch_add(1, Ordering::Relaxed);
+            }
             if tx.send(l.trim().to_string()).is_err() {
                 // keep draining after setup
             }
@@ -183,14 +194,28 @@ fn open_catwan(
         bail!("CatWAN config error: {r}");
     }
     eprintln!("CatWAN TX ready: {r}");
-    Ok(w)
+    Ok((w, errs))
 }
 impl Link {
+    /// TX errors the CatWAN reported since the last call. They arrive asynchronously,
+    /// after the packet they belong to was queued. Always 0 for the other links.
+    fn take_stick_errors(&mut self) -> u64 {
+        match self {
+            Link::Catwan { errs, seen, .. } => {
+                let now = errs.load(Ordering::Relaxed);
+                let n = now - *seen;
+                *seen = now;
+                n
+            }
+            _ => 0,
+        }
+    }
+
     fn send(&mut self, fr: &[u8]) -> Result<()> {
         match self {
             #[cfg(target_os = "linux")]
             Link::Radio(r) => r.send(fr),
-            Link::Catwan { w } => {
+            Link::Catwan { w, .. } => {
                 let mut l = Vec::with_capacity(4 + 2 * fr.len());
                 l.extend_from_slice(b"Q ");
                 for b in fr {
@@ -322,9 +347,8 @@ fn main() -> Result<()> {
             if !a.i_have_an_antenna {
                 bail!("refusing to transmit without --i-have-an-antenna");
             }
-            Link::Catwan {
-                w: open_catwan(a.catwan.as_ref().unwrap(), freq_hz, &prof, a.power)?,
-            }
+            let (w, errs) = open_catwan(a.catwan.as_ref().unwrap(), freq_hz, &prof, a.power)?;
+            Link::Catwan { w, errs, seen: 0 }
         }
         Some(p) => Link::Loop {
             f: std::io::BufWriter::new(std::fs::File::create(p)?),
@@ -546,17 +570,22 @@ fn main() -> Result<()> {
                 };
                 let Some(f) = fr else { break };
                 let t = Instant::now();
+                let mut errs = link.take_stick_errors();
+                if errs > 0 {
+                    eprintln!("tx error: CatWAN reported {errs}");
+                }
                 if let Err(e) = link.send(&f) {
-                    st.tx_errors += 1;
+                    errs += 1;
                     eprintln!("tx error: {e}");
-                    if st.tx_errors > 20 {
-                        // Give up, but let the run wind down and print its summary:
-                        // stopping capture closes the encoder, which ends the main loop.
-                        eprintln!("too many TX errors, stopping");
-                        fatal = true;
-                        stop.store(true, Ordering::Relaxed);
-                        break;
-                    }
+                }
+                st.tx_errors += errs;
+                if errs > 0 && st.tx_errors > 20 {
+                    // Give up, but let the run wind down and print its summary:
+                    // stopping capture closes the encoder, which ends the main loop.
+                    eprintln!("too many TX errors, stopping");
+                    fatal = true;
+                    stop.store(true, Ordering::Relaxed);
+                    break;
                 }
                 busy += t.elapsed();
                 st.frames += 1;
@@ -693,7 +722,7 @@ fn main() -> Result<()> {
     // once its input closes, so a failure there is real.
     let enc_ok = enc.wait().map(|s| s.success()).unwrap_or(false);
     let _ = rd_thread.join();
-    let (st, mut link, busy, tx_fatal) = tx_thread.join().unwrap();
+    let (mut st, mut link, busy, tx_fatal) = tx_thread.join().unwrap();
     #[cfg(target_os = "linux")]
     if let Link::Radio(r) = &mut link {
         r.idle();
@@ -701,10 +730,11 @@ fn main() -> Result<()> {
     if let Link::Loop { f, .. } = &mut link {
         f.flush()?;
     }
-    if let Link::Catwan { w } = &mut link {
+    if let Link::Catwan { w, .. } = &mut link {
         std::thread::sleep(Duration::from_millis(300)); // let the stick drain its queue
         let _ = w.write_all(b"S\n");
     }
+    st.tx_errors += link.take_stick_errors();
     drop(log);
     let (cpu_self, cpu_child) = (cpu_s(libc::RUSAGE_SELF), cpu_s(libc::RUSAGE_CHILDREN));
     let objs = objects.max(1) as f64;
