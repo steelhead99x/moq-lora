@@ -107,10 +107,14 @@ fn open_serial(path: &str) -> Result<File> {
 }
 
 /// A child process fed through a channel, so a slow consumer never blocks the radio loop.
+/// What it cannot take is dropped and counted, since a dropped AU breaks that consumer's
+/// picture (and, for the decoder, its latency samples) until the next keyframe.
 struct Sink {
     tx: Option<mpsc::SyncSender<Vec<u8>>>,
     th: Option<std::thread::JoinHandle<u64>>,
     child: Option<Child>,
+    /// Sends refused because the channel was full or the writer had stopped.
+    refused: std::cell::Cell<u64>,
 }
 impl Sink {
     fn new(mut stdin: ChildStdin, child: Option<Child>) -> Sink {
@@ -128,29 +132,36 @@ impl Sink {
             tx: Some(tx),
             th: Some(th),
             child,
+            refused: std::cell::Cell::new(0),
         }
     }
     fn send(&self, b: &[u8]) {
         if let Some(t) = &self.tx {
-            let _ = t.try_send(b.to_vec());
+            if t.try_send(b.to_vec()).is_err() {
+                self.refused.set(self.refused.get() + 1);
+            }
         }
     }
-    fn close(&mut self, kill_after: Duration) {
+    /// Close the input, wait for the child, and return how many AUs it never got:
+    /// refused by a full channel, or failed to write once the child stopped reading.
+    fn close(&mut self, kill_after: Duration) -> u64 {
         self.tx.take();
+        let mut dropped = self.refused.get();
         if let Some(t) = self.th.take() {
-            let _ = t.join();
+            dropped += t.join().unwrap_or(0);
         }
         if let Some(mut c) = self.child.take() {
             let t0 = Instant::now();
             while t0.elapsed() < kill_after {
                 if let Ok(Some(_)) = c.try_wait() {
-                    return;
+                    return dropped;
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
             let _ = c.kill();
             let _ = c.wait();
         }
+        dropped
     }
 }
 
@@ -690,15 +701,15 @@ fn main() -> Result<()> {
     if let Some(r) = raw.as_mut() {
         r.flush()?;
     }
-    if let Some(s) = play.as_mut() {
-        s.close(Duration::from_secs(3));
-    }
+    let play_dropped = play.as_mut().map(|s| s.close(Duration::from_secs(3)));
+    let mut decode_dropped = None;
     let (mut dtimes, dlat_t, unread) = if let Some(mut s) = dec.take() {
-        s.close(Duration::from_secs(5));
+        decode_dropped = Some(s.close(Duration::from_secs(5)));
         dec_th.take().unwrap().join().unwrap()
     } else {
         (Vec::new(), Vec::new(), 0)
     };
+    let opt = |v: Option<u64>| v.map_or("null".to_string(), |n| n.to_string());
     // The CLI decoder holds one frame until more input (or EOF) arrives; the frame it
     // flushes when we close its stdin at the end of the run is not a stall or latency
     // sample, so ignore decoded frames that appear >1 s after the last object.
@@ -723,7 +734,7 @@ fn main() -> Result<()> {
     let (dst, dworst) = stalls(&dtimes, a.stall_ms);
     let frames_expected = last_frame_no.saturating_sub(first_frame_no.unwrap_or(0)) as u64 + 1;
     let s = format!(
-        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"video_frame_loss\":{:.5},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"catwan\":\"{}\",\"decoded_flushed_at_end\":{flushed},\"cpu_pct_recv\":{:.1},\"cpu_pct_children\":{:.1},\"cpu_cores\":{},\"port_closed\":{port_closed}}}",
+        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"video_frame_loss\":{:.5},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"catwan\":\"{}\",\"decoded_flushed_at_end\":{flushed},\"cpu_pct_recv\":{:.1},\"cpu_pct_children\":{:.1},\"cpu_cores\":{},\"port_closed\":{port_closed},\"play_dropped_aus\":{},\"decode_dropped_aus\":{}}}",
         a.profile, re.frames_ok, re.frames_missing, re.frames_bad,
         re.frames_missing as f64 / (re.frames_ok + re.frames_missing).max(1) as f64,
         re.fec_recovered, obj_times.len(),
@@ -738,7 +749,8 @@ fn main() -> Result<()> {
         rx_bytes as f64 * 8.0 / span.max(1e-9),
         json_escape(&stats_line),
         100.0 * cpu_s(libc::RUSAGE_SELF) / wall, 100.0 * cpu_s(libc::RUSAGE_CHILDREN) / wall,
-        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
+        opt(play_dropped), opt(decode_dropped),
     );
     std::fs::write(format!("{}/summary.json", a.out), &s)?;
     println!("{s}");
