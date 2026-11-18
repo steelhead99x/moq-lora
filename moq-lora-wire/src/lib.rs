@@ -575,8 +575,8 @@ pub struct Reassembler {
     pub frames_stray: u64,
     /// Frames for an object behind the newest one started (replayed or very late), or far
     /// ahead and dropped from the hold unconfirmed (also at [`Reassembler::finish`]). They
-    /// are not reassembled, so a replay can't deliver an old object again or finalize the
-    /// object in progress.
+    /// are not reassembled, so a replay shorter than [`RECOVER_RUN`] frames can't deliver
+    /// an old object again or finalize the object in progress.
     pub frames_stale: u64,
     pub fec_recovered: u64,
     /// The newest object a frame was placed for.
@@ -655,6 +655,32 @@ impl Reassembler {
         } else {
             at
         };
+        // A frame that continues from a held one confirms it, even if it is also close
+        // enough to `newest` to be placed on its own: the held frame goes first.
+        let held_key = |f: &Vec<u8>| FrameHdr::decode(f).map(|(x, _)| (x.group, x.obj));
+        let confirms = (at != Pos::Behind)
+            .then(|| {
+                self.held.iter().position(|f| {
+                    f.as_ref()
+                        .and_then(held_key)
+                        .is_some_and(|k| matches!(pos(k, key), Pos::Same | Pos::Ahead))
+                })
+            })
+            .flatten();
+        if let Some(i) = confirms {
+            // the jump is real: place the held frame first, then this one
+            let held = self.held[i].take().unwrap();
+            self.frames_stale += self.held.iter().flatten().count() as u64;
+            self.held = [None, None];
+            if self.tentative {
+                self.newest = None;
+            }
+            (self.tentative, self.behind, self.behind_run) = (false, None, 0);
+            let (hh, hpl) = FrameHdr::decode(&held).unwrap();
+            self.place_counted(hh, hpl, &mut ev);
+            self.place_counted(h, pl, &mut ev);
+            return ev;
+        }
         match at {
             Pos::Same | Pos::Ahead => {
                 (self.tentative, self.behind, self.behind_run) = (false, None, 0);
@@ -678,30 +704,8 @@ impl Reassembler {
                 }
             }
             Pos::FarAhead => {
-                let held_key = |f: &Vec<u8>| FrameHdr::decode(f).map(|(x, _)| (x.group, x.obj));
-                let confirms = self.held.iter().position(|f| {
-                    f.as_ref()
-                        .and_then(held_key)
-                        .is_some_and(|k| matches!(pos(k, key), Pos::Same | Pos::Ahead))
-                });
-                match confirms {
-                    Some(i) => {
-                        // the jump is real: place the held frame first, then this one
-                        let held = self.held[i].take().unwrap();
-                        self.frames_stale += self.held.iter().flatten().count() as u64;
-                        self.held = [None, None];
-                        if self.tentative {
-                            (self.newest, self.tentative) = (None, false);
-                        }
-                        let (hh, hpl) = FrameHdr::decode(&held).unwrap();
-                        self.place_counted(hh, hpl, &mut ev);
-                        self.place_counted(h, pl, &mut ev);
-                    }
-                    None => {
-                        self.frames_stale += self.held[0].is_some() as u64;
-                        self.held = [self.held[1].take(), Some(frame.to_vec())];
-                    }
-                }
+                self.frames_stale += self.held[0].is_some() as u64;
+                self.held = [self.held[1].take(), Some(frame.to_vec())];
             }
         }
         ev
@@ -1476,6 +1480,16 @@ mod tests {
         let lost = keys.iter().filter(|k| !got.contains(k)).count();
         assert!(lost <= RECOVER_RUN as usize, "lost {lost}");
         assert!(keys.iter().filter(|k| k.0 >= 15).all(|k| got.contains(k)));
+    }
+
+    #[test]
+    fn a_held_frame_is_kept_when_the_next_one_is_near_newest_too() {
+        // (1,9) is held (a later group, obj >= OBJ_NEAR); (2,0) is near (0,2) on its own
+        // but continues from (1,9), so both are placed
+        let keys = [(0, 0), (0, 1), (0, 2), (1, 9), (2, 0), (2, 1)];
+        let mut r = Reassembler::new();
+        assert_eq!(delivered(&mut r, &objs(&keys)), keys);
+        assert_eq!(r.frames_stale, 0);
     }
 
     #[test]
