@@ -736,6 +736,83 @@ impl Reassembler {
     }
 }
 
+/// Largest jump in source frame number one object may make on its own: about 17 s at
+/// 15 fps. A larger jump counts only once the next object follows it.
+pub const FRAME_STEP: u32 = 256;
+
+/// The range of source frame numbers a run covered, for the expected-frame count.
+///
+/// `frame_no` is unauthenticated without a key, so one garbled or injected object must
+/// not stretch the range (a frame number of `u32::MAX` once made a run expect 2^32
+/// frames). The range starts where one object follows another and grows by steps of up
+/// to [`FRAME_STEP`], or by a larger jump the next object confirms; the same rule as
+/// radio sequence numbers ([`SEQ_STEP`]).
+#[derive(Default)]
+pub struct FrameRange {
+    first: Option<u32>,
+    max: u32,
+    /// Before the range starts: the last two frame numbers, either of which may start it.
+    starts: [Option<u32>; 2],
+    /// Frame numbers far ahead, either of which the next object may confirm.
+    jumps: [Option<u32>; 2],
+    /// Frame numbers never confirmed: garbled, injected, or before the range.
+    pub rejected: u64,
+}
+
+impl FrameRange {
+    fn follows(c: &[Option<u32>; 2], f: u32) -> Option<u32> {
+        c.iter()
+            .flatten()
+            .copied()
+            .find(|&x| f > x && f - x <= FRAME_STEP)
+    }
+
+    /// Note one decoded object's frame number.
+    pub fn observe(&mut self, f: u32) {
+        let Some(first) = self.first else {
+            if self.starts.contains(&Some(f)) {
+                return;
+            }
+            match Self::follows(&self.starts, f) {
+                Some(c) => {
+                    self.rejected +=
+                        self.starts.iter().flatten().filter(|&&x| x != c).count() as u64;
+                    (self.first, self.max, self.starts) = (Some(c), f, [None, None]);
+                }
+                None => {
+                    self.rejected += self.starts[0].is_some() as u64;
+                    self.starts = [self.starts[1], Some(f)];
+                }
+            }
+            return;
+        };
+        if f < first {
+            self.rejected += 1;
+        } else if f <= self.max {
+            // a repeat or a late object inside the range: nothing to grow
+        } else if f - self.max <= FRAME_STEP {
+            self.rejected += self.jumps.iter().flatten().count() as u64;
+            (self.max, self.jumps) = (f, [None, None]);
+        } else if let Some(j) = Self::follows(&self.jumps, f) {
+            self.rejected += self.jumps.iter().flatten().filter(|&&x| x != j).count() as u64;
+            (self.max, self.jumps) = (f, [None, None]);
+        } else if !self.jumps.contains(&Some(f)) {
+            self.rejected += self.jumps[0].is_some() as u64;
+            self.jumps = [self.jumps[1], Some(f)];
+        }
+    }
+
+    /// Whether `f` lies in the confirmed range.
+    pub fn contains(&self, f: u32) -> bool {
+        self.first.is_some_and(|a| (a..=self.max).contains(&f))
+    }
+
+    /// Frames the source captured over the confirmed range.
+    pub fn expected(&self) -> u64 {
+        self.first.map_or(0, |a| (self.max - a) as u64 + 1)
+    }
+}
+
 /// MoQ-style delivery gate: passes objects in order, and after a lost object (or a gap in
 /// object ids) drops the rest of that group until the next group's object 0.
 #[derive(Default)]
@@ -1120,6 +1197,50 @@ mod tests {
         assert!(!g.accept(1, 3)); // gap
         assert!(g.accept(5, 0)); // groups dropped at the sender
         assert_eq!(g.groups_cut, 2);
+    }
+
+    fn range(fs: &[u32]) -> FrameRange {
+        let mut r = FrameRange::default();
+        for &f in fs {
+            r.observe(f);
+        }
+        r
+    }
+
+    #[test]
+    fn frame_range_ignores_one_wrong_frame_number() {
+        let honest: Vec<u32> = (0..30).collect();
+        assert_eq!(range(&honest).expected(), 30);
+        // one object stamped u32::MAX (the old sender bug) or garbled
+        let mut fs = honest.clone();
+        fs.insert(10, u32::MAX);
+        let r = range(&fs);
+        assert_eq!((r.expected(), r.rejected), (30, 1));
+        // a repeated frame number adds nothing
+        let mut fs = honest.clone();
+        fs.push(29);
+        assert_eq!(range(&fs).expected(), 30);
+        // a wrong first frame number
+        let r = range(&[5_000_000, 0, 1, 2]);
+        assert_eq!(
+            (r.expected(), r.rejected, r.contains(5_000_000)),
+            (3, 1, false)
+        );
+        // an object from before the range
+        let r = range(&[100, 101, 102, 3]);
+        assert_eq!((r.expected(), r.rejected), (3, 1));
+    }
+
+    #[test]
+    fn frame_range_counts_real_gaps() {
+        // a GOP dropped at the sender: a step of 15
+        assert_eq!(range(&[0, 1, 2, 18, 19]).expected(), 20);
+        // an outage longer than FRAME_STEP, confirmed by the next object
+        let r = range(&[0, 1, 2, 1000, 1001]);
+        assert_eq!((r.expected(), r.rejected), (1002, 0));
+        // an injection while that jump is pending changes nothing
+        let r = range(&[0, 1, 2, 1000, 9_000_000, 1001]);
+        assert_eq!((r.expected(), r.rejected), (1002, 1));
     }
 
     #[test]

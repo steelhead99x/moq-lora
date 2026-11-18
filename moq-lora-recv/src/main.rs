@@ -10,8 +10,8 @@ use anyhow::{bail, Context, Result};
 static RADIO_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 use clap::Parser;
 use moq_lora_wire::{
-    parse_fsk_profile, parse_r_line, read_line_limited, seal, stamp, Event, GroupGate, Line,
-    ObjHdr, Reassembler, MAX_SERIAL_LINE,
+    parse_fsk_profile, parse_r_line, read_line_limited, seal, stamp, Event, FrameRange, GroupGate,
+    Line, ObjHdr, Reassembler, MAX_SERIAL_LINE,
 };
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Read, Write};
@@ -217,6 +217,15 @@ fn json_escape(s: &str) -> String {
 fn jnum(x: f64) -> String {
     if x.is_finite() {
         format!("{x:.1}")
+    } else {
+        "null".into()
+    }
+}
+
+/// Like [`jnum`], with five decimals for a ratio.
+fn jnum5(x: f64) -> String {
+    if x.is_finite() {
+        format!("{x:.5}")
     } else {
         "null".into()
     }
@@ -579,8 +588,10 @@ fn main() -> Result<()> {
     let mut obj_times = Vec::new();
     let mut rssi = Vec::new();
     let mut last_rx = Instant::now();
-    let mut first_frame_no: Option<u32> = None;
-    let mut last_frame_no = 0u32;
+    // Source frame numbers: the confirmed range sets the expected count, and loss counts
+    // distinct frame numbers delivered inside it, so it is never negative or inflated.
+    let mut frame_range = FrameRange::default();
+    let mut delivered_frames = std::collections::HashSet::new();
     let mut handle = |e: Event, t: u64| -> Result<()> {
         match e {
             Event::Object {
@@ -612,12 +623,12 @@ fn main() -> Result<()> {
                 };
                 ok_objs += 1;
                 au_bytes_all += au.len() as u64;
-                first_frame_no.get_or_insert(oh.frame_no);
-                last_frame_no = oh.frame_no;
+                frame_range.observe(oh.frame_no);
                 let pass = a.no_group_gate || gate.accept(group, obj);
                 let lat = (t as f64 - oh.cap_us as f64) / 1000.0 + a.clock_offset_ms;
                 writeln!(objlog, "{{\"t_us\":{t},\"group\":{group},\"obj\":{obj},\"frame_no\":{},\"key\":{},\"au_bytes\":{},\"recovered\":{recovered},\"passed\":{pass},\"enc_ms\":{:.1},\"lat_ms\":{lat:.1}}}", oh.frame_no, oh.key, au.len(), oh.enc_us as f64 / 1000.0)?;
                 if pass {
+                    delivered_frames.insert(oh.frame_no);
                     delivered_bytes += au.len() as u64;
                     obj_lat.push(lat);
                     obj_times.push(t);
@@ -760,13 +771,23 @@ fn main() -> Result<()> {
     let wall = t0.elapsed().as_secs_f64().max(1e-9);
     let (ost, oworst) = stalls(&obj_times, a.stall_ms);
     let (dst, dworst) = stalls(&dtimes, a.stall_ms);
-    let frames_expected = last_frame_no.saturating_sub(first_frame_no.unwrap_or(0)) as u64 + 1;
+    let frames_expected = frame_range.expected();
+    let frames_delivered = delivered_frames
+        .iter()
+        .filter(|&&f| frame_range.contains(f))
+        .count();
+    let video_frame_loss = if frames_expected == 0 {
+        f64::NAN
+    } else {
+        1.0 - frames_delivered as f64 / frames_expected as f64
+    };
     let s = format!(
-        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frames_late\":{},\"radio_frames_stray\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"video_frame_loss\":{:.5},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"catwan\":\"{}\",\"decoded_flushed_at_end\":{flushed},\"cpu_pct_recv\":{:.1},\"cpu_pct_children\":{:.1},\"cpu_cores\":{},\"port_closed\":{port_closed},\"play_dropped_aus\":{},\"decode_dropped_aus\":{}}}",
+        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frames_late\":{},\"radio_frames_stray\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"frames_delivered\":{frames_delivered},\"frame_no_rejected\":{},\"video_frame_loss\":{},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"catwan\":\"{}\",\"decoded_flushed_at_end\":{flushed},\"cpu_pct_recv\":{:.1},\"cpu_pct_children\":{:.1},\"cpu_cores\":{},\"port_closed\":{port_closed},\"play_dropped_aus\":{},\"decode_dropped_aus\":{}}}",
         a.profile, re.frames_ok, re.frames_missing, re.frames_bad, re.frames_late, re.frames_stray,
         re.frames_missing as f64 / (re.frames_ok + re.frames_missing).max(1) as f64,
         re.fec_recovered, obj_times.len(),
-        1.0 - obj_times.len() as f64 / frames_expected.max(1) as f64,
+        frame_range.rejected,
+        jnum5(video_frame_loss),
         gate.groups_cut, gate.objects_skipped,
         delivered_bytes as f64 * 8.0 / span.max(1e-9), au_bytes_all as f64 * 8.0 / span.max(1e-9),
         jnum(pct(&mut obj_lat.clone(), 0.5)), jnum(pct(&mut obj_lat.clone(), 0.95)), jnum(obj_lat.iter().cloned().fold(f64::NAN, f64::max)),
