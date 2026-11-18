@@ -678,7 +678,9 @@ fn main() -> Result<()> {
         }
     }
     if let Some(mut wr) = port_w.filter(|_| !port_closed) {
-        let _ = wr.write_all(b"S\n");
+        if let Err(e) = wr.write_all(b"S\n") {
+            eprintln!("stopping the CatWAN failed: {e}");
+        }
         let t = Instant::now();
         while t.elapsed() < Duration::from_secs(2) {
             if let Ok((_, l)) = lrx.recv_timeout(Duration::from_millis(100)) {
