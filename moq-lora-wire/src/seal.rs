@@ -107,11 +107,18 @@ impl ObjectSealer {
 
 /// Parse a hex key (whitespace ignored).
 pub fn parse_key_hex(s: &str) -> Option<Vec<u8>> {
-    let h: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    if h.is_empty() {
-        return None;
-    }
-    crate::decode_hex(&h)
+    // Sized up front so it never reallocates, and wiped before it is freed: this is
+    // a copy of the key in hex.
+    let mut h = String::with_capacity(s.len());
+    h.extend(s.chars().filter(|c| !c.is_whitespace()));
+    let key = if h.is_empty() {
+        None
+    } else {
+        crate::decode_hex(&h)
+    };
+    // SAFETY: zero bytes are valid UTF-8, so the String stays valid.
+    wipe(unsafe { h.as_bytes_mut() });
+    key
 }
 
 /// Session id to use after the 16-bit group counter wraps.
