@@ -115,6 +115,10 @@ enum Link {
         w: std::fs::File,
         errs: Arc<AtomicU64>,
         seen: u64,
+        /// How long one write may wait for the stick (see [`catwan_write_timeout`]).
+        timeout: Duration,
+        /// A write timed out, possibly mid-line; see [`catwan_line`].
+        resync: bool,
     },
 }
 
@@ -142,8 +146,28 @@ fn open_serial(path: &str) -> Result<std::fs::File> {
 }
 
 /// How long one write to the CatWAN may wait for the stick to take it. The stick stops
-/// reading USB only while its 12-frame queue is full, which drains in about 100 ms.
-const CATWAN_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
+/// reading USB only while its 12-frame queue is full, and a slot frees once a frame is
+/// on air, so allow three frame times, and at least a second for fast profiles.
+fn catwan_write_timeout(frame_toa_us: u64) -> Duration {
+    Duration::from_micros(3 * frame_toa_us).max(Duration::from_secs(1))
+}
+
+/// Timeout for the stick's setup commands, before the profile's frame time matters.
+const CATWAN_SETUP_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// One command line for the stick. After a timed-out write the stick may hold the
+/// front of a line; the stick runs every line ending in a newline, and would send a
+/// truncated `Q` with even-length hex as a short frame. `resync` prefixes `x\n`, so that
+/// leftover fails the stick's hex check and is dropped (a bare `x` line gets an `ERR`).
+fn catwan_line(resync: bool, body: &[u8]) -> Vec<u8> {
+    let mut l = Vec::with_capacity(3 + body.len());
+    if resync {
+        l.extend_from_slice(b"x\n");
+    }
+    l.extend_from_slice(body);
+    l.push(b'\n');
+    l
+}
 
 /// Write all of `buf` to a non-blocking `f` within `timeout`, or fail: a stick that
 /// stops reading must fail the write, not hang the sender past `--secs`.
@@ -220,7 +244,11 @@ fn open_catwan(
         }
     });
     let mut cmd = |c: &str, want: &str| -> Result<String> {
-        write_deadline(&mut w, format!("{c}\n").as_bytes(), CATWAN_WRITE_TIMEOUT)?;
+        write_deadline(
+            &mut w,
+            &catwan_line(false, c.as_bytes()),
+            CATWAN_SETUP_TIMEOUT,
+        )?;
         let t0 = Instant::now();
         while t0.elapsed() < Duration::from_secs(3) {
             if let Ok(l) = rx.recv_timeout(Duration::from_millis(100)) {
@@ -264,16 +292,17 @@ impl Link {
         match self {
             #[cfg(target_os = "linux")]
             Link::Radio(r) => r.send(fr),
-            Link::Catwan { w, .. } => {
-                // The leading newline ends whatever a timed-out write left half sent, so
-                // the stick never parses it with this frame; it ignores empty lines.
-                let mut l = Vec::with_capacity(5 + 2 * fr.len());
-                l.extend_from_slice(b"\nQ ");
+            Link::Catwan {
+                w, timeout, resync, ..
+            } => {
+                let mut body = Vec::with_capacity(2 + 2 * fr.len());
+                body.extend_from_slice(b"Q ");
                 for b in fr {
-                    l.extend_from_slice(format!("{b:02x}").as_bytes());
+                    body.extend_from_slice(format!("{b:02x}").as_bytes());
                 }
-                l.push(b'\n');
-                write_deadline(w, &l, CATWAN_WRITE_TIMEOUT)
+                let r = write_deadline(w, &catwan_line(*resync, &body), *timeout);
+                *resync = r.is_err();
+                r
             }
             Link::Loop { f, toa, t0 } => {
                 std::thread::sleep(*toa);
@@ -451,7 +480,13 @@ fn main() -> Result<()> {
                 bail!("refusing to transmit without --i-have-an-antenna");
             }
             let (w, errs) = open_catwan(a.catwan.as_ref().unwrap(), freq_hz, &prof, a.power)?;
-            Link::Catwan { w, errs, seen: 0 }
+            Link::Catwan {
+                w,
+                errs,
+                seen: 0,
+                timeout: catwan_write_timeout(frame_toa_us),
+                resync: false,
+            }
         }
         Some(p) => Link::Loop {
             f: std::io::BufWriter::new(std::fs::File::create(p)?),
@@ -884,9 +919,14 @@ fn main() -> Result<()> {
     if let Link::Loop { f, .. } = &mut link {
         f.flush()?;
     }
-    if let Link::Catwan { w, .. } = &mut link {
+    if let Link::Catwan {
+        w, timeout, resync, ..
+    } = &mut link
+    {
         std::thread::sleep(Duration::from_millis(300)); // let the stick drain its queue
-        let _ = write_deadline(w, b"\nS\n", CATWAN_WRITE_TIMEOUT);
+        if let Err(e) = write_deadline(w, &catwan_line(*resync, b"S"), *timeout) {
+            eprintln!("stopping the CatWAN failed, it may still be transmitting: {e}");
+        }
     }
     // Errors the stick reports while draining its queue count toward the same limit.
     st.tx_errors += link.take_stick_errors();
@@ -925,7 +965,80 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{advance, next_capture, push_bounded, queue_cap_frames, QueueDrops, TxObj};
+    use super::{
+        advance, catwan_line, catwan_write_timeout, next_capture, push_bounded, queue_cap_frames,
+        write_deadline, QueueDrops, TxObj,
+    };
+    use std::time::{Duration, Instant};
+
+    /// A pty pair: (writer side as a non-blocking File, reader fd kept open).
+    fn pty() -> (std::fs::File, std::fs::File) {
+        use std::os::fd::FromRawFd;
+        let (mut m, mut s) = (0, 0);
+        // SAFETY: openpty writes two fds into the out parameters.
+        let r = unsafe {
+            libc::openpty(
+                &mut m,
+                &mut s,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        };
+        assert_eq!(r, 0);
+        // SAFETY: raw termios on our own fd, then O_NONBLOCK as open_catwan sets it.
+        unsafe {
+            let mut t: libc::termios = std::mem::zeroed();
+            libc::tcgetattr(s, &mut t);
+            libc::cfmakeraw(&mut t);
+            libc::tcsetattr(s, libc::TCSANOW, &t);
+            libc::fcntl(
+                s,
+                libc::F_SETFL,
+                libc::fcntl(s, libc::F_GETFL) | libc::O_NONBLOCK,
+            );
+            (std::fs::File::from_raw_fd(s), std::fs::File::from_raw_fd(m))
+        }
+    }
+
+    #[test]
+    fn write_deadline_fails_on_a_reader_that_stops() {
+        use std::io::Read;
+        let (mut w, mut r) = pty();
+        // a reader that keeps up: everything arrives
+        write_deadline(&mut w, b"Q 0102\n", Duration::from_millis(200)).unwrap();
+        let mut got = [0u8; 7];
+        r.read_exact(&mut got).unwrap();
+        assert_eq!(&got, b"Q 0102\n");
+        // a reader that never reads again: the write gives up near its deadline
+        let t = Instant::now();
+        let big = vec![b'a'; 1 << 20];
+        assert!(write_deadline(&mut w, &big, Duration::from_millis(300)).is_err());
+        let took = t.elapsed();
+        assert!(
+            took >= Duration::from_millis(300) && took < Duration::from_secs(2),
+            "{took:?}"
+        );
+    }
+
+    #[test]
+    fn resync_makes_a_truncated_line_invalid() {
+        assert_eq!(catwan_line(false, b"Q 01"), b"Q 01\n");
+        // what a timed-out write left ("Q 01") plus the next line must not parse as hex
+        let mut stick_sees = b"Q 01".to_vec();
+        stick_sees.extend_from_slice(&catwan_line(true, b"Q 02"));
+        let first = stick_sees.split(|&c| c == b'\n').next().unwrap();
+        assert_eq!(first, b"Q 01x");
+    }
+
+    #[test]
+    fn write_timeout_covers_slow_profiles() {
+        assert_eq!(catwan_write_timeout(7_093), Duration::from_secs(1)); // 300 kbit/s
+        assert_eq!(
+            catwan_write_timeout(1_800_000),
+            Duration::from_millis(5_400)
+        ); // 1.2 kbit/s
+    }
     use std::collections::VecDeque;
     use std::collections::VecDeque as Q;
 
