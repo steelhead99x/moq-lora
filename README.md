@@ -131,7 +131,8 @@ Details in the [HOWTO](HOWTO.md#9-radio-rules).
 * The bitrate is set by hand. There's no adaptation.
 * The ffmpeg CLI decoder holds back one frame (~67 ms), and that's included in the latency numbers.
 * Encryption uses a pre-shared key. Frames are private and tamper-proof, but a recorded frame
-  can be replayed and the radio headers aren't encrypted.
+  can be replayed and the radio headers aren't encrypted. Each run draws a random 32-bit session
+  id, so rotate the key long before 2^16 runs, when two runs become likely to share one.
   See [ROADMAP.md](ROADMAP.md) and the code review in [REVIEW.md](REVIEW.md).
 
 ## License
