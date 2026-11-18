@@ -736,80 +736,105 @@ impl Reassembler {
     }
 }
 
-/// Largest jump in source frame number one object may make on its own: about 17 s at
-/// 15 fps. A larger jump counts only once the next object follows it.
+/// Largest jump in source frame number between two consecutive objects that still
+/// counts as one stretch of video: about 17 s at 15 fps.
 pub const FRAME_STEP: u32 = 256;
+
+/// Largest step from one object to the next that may start the range or end it.
+pub const FRAME_EDGE_STEP: u32 = 8;
 
 /// The range of source frame numbers a run covered, for the expected-frame count.
 ///
 /// `frame_no` is unauthenticated without a key, so one garbled or injected object must
 /// not stretch the range (a frame number of `u32::MAX` once made a run expect 2^32
-/// frames). The range starts where one object follows another and grows by steps of up
-/// to [`FRAME_STEP`], or by a larger jump the next object confirms; the same rule as
-/// radio sequence numbers ([`SEQ_STEP`]).
+/// frames). A frame number joins the range only when the next object follows it (a
+/// larger number, at most [`FRAME_STEP`] ahead), so a lone wrong number in the middle of
+/// a run changes nothing. The start needs a step of at most [`FRAME_EDGE_STEP`], and the
+/// last object counts if it is at most that far past the range: a wrong number right
+/// before the first or after the last real one can stretch the range by at most
+/// `FRAME_EDGE_STEP - 1`. A lone first object followed by a long outage is left out.
 #[derive(Default)]
 pub struct FrameRange {
     first: Option<u32>,
     max: u32,
-    /// Before the range starts: the last two frame numbers, either of which may start it.
-    starts: [Option<u32>; 2],
-    /// Frame numbers far ahead, either of which the next object may confirm.
-    jumps: [Option<u32>; 2],
+    /// Recent frame numbers past the range, any of which the next object may confirm.
+    pending: [Option<u32>; 3],
     /// Frame numbers never confirmed: garbled, injected, or before the range.
     pub rejected: u64,
 }
 
 impl FrameRange {
-    fn follows(c: &[Option<u32>; 2], f: u32) -> Option<u32> {
-        c.iter()
-            .flatten()
-            .copied()
-            .find(|&x| f > x && f - x <= FRAME_STEP)
-    }
-
     /// Note one decoded object's frame number.
     pub fn observe(&mut self, f: u32) {
-        let Some(first) = self.first else {
-            if self.starts.contains(&Some(f)) {
+        if let Some(a) = self.first {
+            if f < a {
+                self.rejected += 1;
                 return;
             }
-            match Self::follows(&self.starts, f) {
-                Some(c) => {
-                    self.rejected +=
-                        self.starts.iter().flatten().filter(|&&x| x != c).count() as u64;
-                    (self.first, self.max, self.starts) = (Some(c), f, [None, None]);
-                }
-                None => {
-                    self.rejected += self.starts[0].is_some() as u64;
-                    self.starts = [self.starts[1], Some(f)];
-                }
+            if f <= self.max {
+                return; // a repeat or a late object inside the range
             }
-            return;
-        };
-        if f < first {
-            self.rejected += 1;
-        } else if f <= self.max {
-            // a repeat or a late object inside the range: nothing to grow
-        } else if f - self.max <= FRAME_STEP {
-            self.rejected += self.jumps.iter().flatten().count() as u64;
-            (self.max, self.jumps) = (f, [None, None]);
-        } else if let Some(j) = Self::follows(&self.jumps, f) {
-            self.rejected += self.jumps.iter().flatten().filter(|&&x| x != j).count() as u64;
-            (self.max, self.jumps) = (f, [None, None]);
-        } else if !self.jumps.contains(&Some(f)) {
-            self.rejected += self.jumps[0].is_some() as u64;
-            self.jumps = [self.jumps[1], Some(f)];
         }
+        if self.pending.contains(&Some(f)) {
+            return;
+        }
+        let step = if self.first.is_some() {
+            FRAME_STEP
+        } else {
+            FRAME_EDGE_STEP
+        };
+        let confirmed = self
+            .pending
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|&c| f > c && f - c <= step)
+            .max();
+        match confirmed {
+            Some(c) => {
+                self.first.get_or_insert(c);
+                self.max = self.max.max(c);
+                let max = self.max;
+                self.rejected += self.pending.iter().flatten().filter(|&&x| x > max).count() as u64;
+                self.pending = [None, None, Some(f)];
+            }
+            None => {
+                let max = self.max;
+                let past = |x: u32| self.first.is_none() || x > max;
+                self.rejected += self.pending[0].is_some_and(past) as u64;
+                self.pending = [self.pending[1], self.pending[2], Some(f)];
+            }
+        }
+    }
+
+    /// The last frame number of the range, including the last object if it follows.
+    fn end(&self) -> Option<u32> {
+        let max = self.max;
+        self.first?;
+        let tail = self
+            .pending
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|&p| p > max && p - max <= FRAME_EDGE_STEP)
+            .min();
+        Some(tail.unwrap_or(max))
     }
 
     /// Whether `f` lies in the confirmed range.
     pub fn contains(&self, f: u32) -> bool {
-        self.first.is_some_and(|a| (a..=self.max).contains(&f))
+        match (self.first, self.end()) {
+            (Some(a), Some(b)) => (a..=b).contains(&f),
+            _ => false,
+        }
     }
 
     /// Frames the source captured over the confirmed range.
     pub fn expected(&self) -> u64 {
-        self.first.map_or(0, |a| (self.max - a) as u64 + 1)
+        match (self.first, self.end()) {
+            (Some(a), Some(b)) => (b - a) as u64 + 1,
+            _ => 0,
+        }
     }
 }
 
@@ -1229,6 +1254,23 @@ mod tests {
         // an object from before the range
         let r = range(&[100, 101, 102, 3]);
         assert_eq!((r.expected(), r.rejected), (3, 1));
+    }
+
+    #[test]
+    fn frame_range_bounds_a_wrong_number_near_real_ones() {
+        // mid-run, one step past the range: rejected
+        let mut fs: Vec<u32> = (0..10).collect();
+        fs.push(265);
+        fs.extend(10..30);
+        let r = range(&fs);
+        assert_eq!((r.expected(), r.rejected), (30, 1));
+        // before the first real frame: rejected, or at most FRAME_EDGE_STEP - 1 extra
+        assert_eq!(range(&[0, 100, 101, 102]).expected(), 3);
+        assert_eq!(range(&[200, 300, 301, 302]).expected(), 3);
+        assert!(range(&[95, 100, 101, 102]).expected() < 3 + FRAME_EDGE_STEP as u64);
+        // after the last real frame
+        let r = range(&[0, 1, 2, 3, 200]);
+        assert_eq!((r.expected(), r.contains(200)), (4, false));
     }
 
     #[test]
