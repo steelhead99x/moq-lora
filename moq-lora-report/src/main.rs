@@ -127,9 +127,8 @@ fn main() -> Result<()> {
             .max()
             .unwrap_or(u64::MAX);
         let cutoff = last_obj.saturating_add(1_000_000);
-        // Senders since 65140d4 write `link`; the CPU guess is only for the older
-        // summaries in results/video, which predate it (a low-CPU forward run, such as
-        // one with the hardware encoder, would otherwise be labelled reverse).
+        // The CPU guess is only for summaries without `link`, such as the published runs
+        // in results/video; it labels a low-CPU forward run (the hardware encoder) reverse.
         let reverse = match s["link"].as_str() {
             Some(l) => l == "catwan",
             None => {
