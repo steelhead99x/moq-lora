@@ -555,15 +555,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "moq-lora-pi"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "embedded-hal-bus",
+ "libc",
+ "linux-embedded-hal",
+ "sx1276",
+]
+
+[[package]]
 name = "moq-lora-recv"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "embedded-hal",
- "embedded-hal-bus",
  "libc",
- "linux-embedded-hal",
+ "moq-lora-pi",
  "moq-lora-wire",
  "sx1276",
 ]
@@ -583,10 +592,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "embedded-hal",
- "embedded-hal-bus",
  "libc",
- "linux-embedded-hal",
+ "moq-lora-pi",
  "moq-lora-wire",
  "sx1276",
 ]
