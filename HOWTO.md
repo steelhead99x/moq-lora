@@ -148,7 +148,8 @@ The sender takes the usual knobs:
 **The bitrate budget.** Keep the video bitrate to about **60% of the radio rate**. At 300 kbit/s FSK,
 180 kbit/s of video used about 225 kbit/s of air once headers, padding and FEC were added, and the
 rest is margin for IDR bursts. If you go higher, the sender's queue grows and it starts dropping
-whole GOPs to stay live (`objects_dropped` in its summary).
+whole GOPs to stay live (`objects_dropped`, or `objects_dropped_queue_full` once the queue is
+full, in its summary).
 
 **The radio rate.** `--profile BITRATE:FDEV:PREAMBLE[:x]` must match on both ends. The default
 is `300000:100000:6`. `350000:100000:6:x` was slightly better in our tests, but `:x` means
@@ -208,7 +209,7 @@ More detail is in [scripts/README.md](scripts/README.md). The meaning of each co
 | `no "OK S" reply` | wrong `--port`, or the stick isn't running this firmware (check the `I` command from section 4) |
 | the window opens but stays black | the sender isn't running, or the `--profile` differs between the two ends |
 | lots of freezes | check both antennas are on and try another spot, use `--fec-k 8`, or lower `--bitrate`. Loss also varies a lot from run to run. |
-| `objects_dropped` grows on the sender | the video bitrate is too high for the radio rate (see section 6) |
+| `objects_dropped` or `objects_dropped_queue_full` grows on the sender | the video bitrate is too high for the radio rate (see section 6) |
 | `open /dev/spidev0.0` fails on the Pi | SPI isn't enabled, or you haven't logged in again after `usermod` |
 | `refusing to transmit` | add `--i-have-an-antenna`, after attaching one |
 
