@@ -52,7 +52,12 @@ pub fn read_line_limited(
     let mut buf = Vec::new();
     let mut skipping = false;
     loop {
-        let available = r.fill_buf()?;
+        let available = match r.fill_buf() {
+            Ok(a) => a,
+            // a signal, not an error: std's `read_line` retries too
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
         if available.is_empty() {
             if skipping || buf.is_empty() {
                 return Ok(None);
@@ -977,6 +982,27 @@ mod tests {
         assert_eq!(
             read_line_limited(&mut input, 16).unwrap(),
             Some(Line::Data(b"next\n".to_vec()))
+        );
+
+        // A signal during a read is retried, not reported as an error.
+        struct Eintr(u8);
+        impl std::io::Read for Eintr {
+            fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+                self.0 += 1;
+                match self.0 {
+                    1 => Err(std::io::ErrorKind::Interrupted.into()),
+                    2 => {
+                        b[..3].copy_from_slice(b"ok\n");
+                        Ok(3)
+                    }
+                    _ => Ok(0),
+                }
+            }
+        }
+        let mut input = std::io::BufReader::new(Eintr(0));
+        assert_eq!(
+            read_line_limited(&mut input, 8).unwrap(),
+            Some(Line::Data(b"ok\n".to_vec()))
         );
 
         // No newline, and longer than the cap: do not return the bytes.

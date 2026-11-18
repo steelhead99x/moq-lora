@@ -50,7 +50,7 @@ fn stalls(t: &[u64], thr_ms: f64) -> (u32, f64) {
     let mut n = 0;
     let mut worst = 0f64;
     for w in t.windows(2) {
-        let g = (w[1] - w[0]) as f64 / 1000.0;
+        let g = w[1].saturating_sub(w[0]) as f64 / 1000.0;
         worst = worst.max(g);
         if g > thr_ms {
             n += 1;
