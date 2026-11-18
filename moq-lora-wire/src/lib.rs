@@ -528,6 +528,22 @@ impl Partial {
     }
 }
 
+/// Largest forward step one frame may make on its own, in frames (about 0.45 s at
+/// 300 kbit/s). A larger step moves the baseline only when the next frame continues from
+/// it, so one garbled, injected or replayed sequence number can't hide loss, and can add
+/// at most `SEQ_STEP - 1` frames to it (a step that small looks like honest loss).
+///
+/// Limits: sequence numbers are not authenticated, so two consecutive forged frames far
+/// ahead are a confirmed gap (closing that needs the frame header under the AEAD,
+/// `quest/m1/aead-headers.md`); and a 16-bit counter can't tell a frame more than 32768
+/// behind (about 4 minutes at 300 kbit/s) from one ahead, so consecutive replays that old
+/// count as a gap too.
+pub const SEQ_STEP: u16 = 64;
+
+/// How far behind the newest a frame counts as `late` (reordered or replayed) rather
+/// than `stray`. Neither moves the baseline.
+pub const SEQ_WINDOW: u16 = 1024;
+
 /// Rebuilds objects from radio frames. Objects arrive one after another from a single
 /// sender, so a frame from a new object finalizes the previous one.
 #[derive(Default)]
@@ -535,10 +551,28 @@ pub struct Reassembler {
     cur: Option<Partial>,
     done: Option<(u16, u8)>,
     last_seq: Option<u16>,
+    /// The last two frames far ahead of the baseline, either of which a following frame
+    /// may confirm as a real gap; two, so one injected frame can't displace a real one.
+    jumps: [Option<u16>; 2],
+    /// Before a baseline exists: the last two frames, either of which a following frame
+    /// may confirm as the start.
+    starts: [Option<u16>; 2],
+    /// Frames that fit their object (`ok`) or contradicted it (`bad`). Every CRC-valid frame
+    /// that is not a duplicate lands in exactly one; `late` and `stray` frames are counted
+    /// there as well.
     pub frames_ok: u64,
+    /// Sequence numbers skipped. Loss assumes in-order delivery, which the radio gives: a
+    /// frame that arrives late was already counted missing when its gap was seen.
     pub frames_missing: u64,
     pub frames_bad: u64,
     pub frames_dup: u64,
+    /// Frames a little behind the newest (within [`SEQ_WINDOW`]): reordered or replayed.
+    pub frames_late: u64,
+    /// Frames further behind, or far ahead with no frame continuing from them: garbled,
+    /// injected or replayed sequence numbers, not a gap. The baseline never moves back,
+    /// so a sender that restarts its counter mid-run is not followed: restart the
+    /// receiver with it, as the bench scripts do.
+    pub frames_stray: u64,
     pub fec_recovered: u64,
 }
 
@@ -553,21 +587,105 @@ impl Reassembler {
             self.frames_bad += 1;
             return ev;
         };
-        if let Some(l) = self.last_seq {
-            let d = h.seq.wrapping_sub(l);
-            if d == 0 {
+        if !self.track_seq(h.seq) {
+            return ev; // duplicate
+        }
+        // Each frame lands in exactly one of frames_ok and frames_bad.
+        if self.place(h, pl, &mut ev) {
+            self.frames_ok += 1;
+        } else {
+            self.frames_bad += 1;
+        }
+        ev
+    }
+
+    /// Loss accounting for one frame's sequence number; false for a duplicate.
+    fn track_seq(&mut self, seq: u16) -> bool {
+        let Some(last) = self.last_seq else {
+            // The baseline starts only where a frame follows an earlier one, so a stray
+            // first frame can't make the honest stream look like a long gap.
+            if self.starts.contains(&Some(seq)) {
                 self.frames_dup += 1;
-                return ev;
+                return false;
             }
-            if d < 0x8000 {
-                self.frames_missing += d as u64 - 1;
+            let follows = self
+                .starts
+                .iter()
+                .flatten()
+                .copied()
+                .find(|&c| (1..=SEQ_STEP).contains(&seq.wrapping_sub(c)));
+            match follows {
+                Some(c) => {
+                    self.frames_missing += seq.wrapping_sub(c) as u64 - 1;
+                    self.frames_stray +=
+                        self.starts.iter().flatten().filter(|&&x| x != c).count() as u64;
+                    self.last_seq = Some(seq);
+                    self.starts = [None, None];
+                }
+                None => {
+                    if self.starts[0].is_some() {
+                        self.frames_stray += 1; // the oldest candidate was never followed
+                    }
+                    self.starts = [self.starts[1], Some(seq)];
+                }
+            }
+            return true;
+        };
+        let d = seq.wrapping_sub(last);
+        if d == 0 {
+            self.frames_dup += 1;
+            return false;
+        } else if d <= SEQ_STEP {
+            // the stream went on from the baseline: pending jumps were strays
+            self.frames_stray += self.jumps.iter().flatten().count() as u64;
+            self.jumps = [None, None];
+            self.frames_missing += d as u64 - 1;
+            self.last_seq = Some(seq);
+        } else if d >= 0x8000 {
+            // behind: late if close, stray if far; never moves the baseline back
+            if d >= SEQ_WINDOW.wrapping_neg() {
+                self.frames_late += 1;
+            } else {
+                self.frames_stray += 1;
+            }
+        } else {
+            let follows = self
+                .jumps
+                .iter()
+                .flatten()
+                .copied()
+                .find(|&j| (1..=SEQ_STEP).contains(&seq.wrapping_sub(j)));
+            match follows {
+                Some(j) => {
+                    // confirmed by a frame that follows it: a real gap up to the jump,
+                    // and any frames between the jump and this one
+                    self.frames_missing += j.wrapping_sub(last) as u64 - 1;
+                    self.frames_missing += seq.wrapping_sub(j) as u64 - 1;
+                    self.frames_stray +=
+                        self.jumps.iter().flatten().filter(|&&x| x != j).count() as u64;
+                    self.last_seq = Some(seq);
+                    self.jumps = [None, None];
+                }
+                None => {
+                    if self.jumps.contains(&Some(seq)) {
+                        self.frames_dup += 1;
+                        return false;
+                    }
+                    if self.jumps[0].is_some() {
+                        self.frames_stray += 1; // the oldest was never followed
+                    }
+                    self.jumps = [self.jumps[1], Some(seq)];
+                }
             }
         }
-        self.last_seq = Some(h.seq);
-        self.frames_ok += 1;
+        true
+    }
+
+    /// Store a CRC-valid frame in its object; false when it contradicts the object.
+    fn place(&mut self, h: FrameHdr, pl: &[u8], ev: &mut Vec<Event>) -> bool {
         let key = (h.group, h.obj);
         if self.done == Some(key) {
-            return ev; // trailing parity of an object already delivered
+            return true; // trailing parity of an object already delivered
         }
         if self
             .cur
@@ -578,25 +696,21 @@ impl Reassembler {
         }
         let p = self.cur.get_or_insert_with(|| Partial::new(h));
         if p.h.objlen != h.objlen || p.h.k != h.k {
-            self.frames_bad += 1;
-            return ev;
+            return false;
         }
         if h.parity {
             let Some(slot) = p.parity.get_mut(h.idx as usize) else {
-                self.frames_bad += 1;
-                return ev;
+                return false;
             };
             let n = pl.len().min(h.chunk_size());
             slot.get_or_insert_with(|| pl[..n].to_vec());
         } else {
             let n = h.chunk_len(h.idx as usize);
             if pl.len() < n {
-                self.frames_bad += 1;
-                return ev;
+                return false;
             }
             let Some(slot) = p.chunks.get_mut(h.idx as usize) else {
-                self.frames_bad += 1;
-                return ev;
+                return false;
             };
             slot.get_or_insert_with(|| pl[..n].to_vec());
         }
@@ -607,7 +721,7 @@ impl Reassembler {
             self.fec_recovered += p.recovered as u64;
             ev.push(p.into_event());
         }
-        ev
+        true
     }
 
     /// Finalize the object in progress (call when the link has been idle a while).
@@ -661,6 +775,13 @@ impl GroupGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_crc_for_test(f: &mut [u8]) {
+        f[10] = 0;
+        f[11] = 0;
+        let c = crc16(f);
+        f[10..12].copy_from_slice(&c.to_be_bytes());
+    }
 
     fn obj(n: usize, seed: u8) -> Vec<u8> {
         (0..n)
@@ -813,6 +934,166 @@ mod tests {
                 "n={n}"
             );
         }
+    }
+
+    /// Re-stamp a frame's sequence number (and its CRC), as a replaying peer would.
+    fn with_seq(fr: &[u8], seq: u16) -> Vec<u8> {
+        let mut f = fr.to_vec();
+        f[0..2].copy_from_slice(&seq.to_be_bytes());
+        write_crc_for_test(&mut f);
+        f
+    }
+
+    #[test]
+    fn backward_seq_does_not_skew_loss() {
+        let mut f = Fragmenter::new(0).unwrap();
+        let frames: Vec<Vec<u8>> = (0..4)
+            .flat_map(|o| f.fragment(1, o, &obj(100, o)).unwrap())
+            .collect(); // seq 0..=3, one frame per object
+        let mut r = Reassembler::new();
+        let mut ev = vec![];
+        for fr in &frames[..3] {
+            ev.extend(r.push(fr));
+        }
+        // a stale copy of frame 2 stamped far in the past
+        ev.extend(r.push(&with_seq(&frames[2], 2u16.wrapping_sub(0x7000))));
+        ev.extend(r.push(&frames[3]));
+        ev.extend(r.flush());
+        assert_eq!(
+            r.frames_missing, 0,
+            "one old seq made honest frames look lost"
+        );
+        assert_eq!(r.frames_stray, 1);
+        assert_eq!(
+            ev.iter()
+                .filter(|e| matches!(e, Event::Object { .. }))
+                .count(),
+            4
+        );
+
+        // a late frame still completes its object
+        let mut f = Fragmenter::new(0).unwrap();
+        let a = f.fragment(2, 0, &obj(500, 1)).unwrap(); // 3 frames, seq 0..=2
+        let mut r = Reassembler::new();
+        let mut ev = vec![];
+        for fr in [&a[0], &a[2], &a[1]] {
+            ev.extend(r.push(fr));
+        }
+        assert!(matches!(ev.last(), Some(Event::Object { .. })), "{ev:?}");
+        assert_eq!((r.frames_late, r.frames_missing), (1, 1));
+    }
+
+    /// Frames with sequence numbers `seqs`, each a one-frame object.
+    fn seq_frames(seqs: &[u16]) -> Vec<Vec<u8>> {
+        let mut f = Fragmenter::new(0).unwrap();
+        seqs.iter()
+            .enumerate()
+            .map(|(i, &s)| with_seq(&f.fragment(1, i as u8, &obj(50, 1)).unwrap()[0], s))
+            .collect()
+    }
+    fn account(seqs: &[u16]) -> Reassembler {
+        let mut r = Reassembler::new();
+        for fr in seq_frames(seqs) {
+            r.push(&fr);
+        }
+        r
+    }
+
+    #[test]
+    fn one_forward_seq_can_neither_fake_nor_hide_loss() {
+        // spoofed far ahead, then honest frames: no gap, and later loss still counts
+        let r = account(&[0, 0x7000, 1, 2, 4, 5]);
+        assert_eq!((r.frames_missing, r.frames_stray, r.frames_late), (1, 1, 0));
+    }
+
+    #[test]
+    fn a_real_long_gap_is_counted_once_confirmed() {
+        // an outage of 5000 frames: the frame after the gap confirms it
+        let r = account(&[0, 1, 5002, 5003, 5004]);
+        assert_eq!((r.frames_missing, r.frames_stray), (5000, 0));
+        // a gap at the very end, never confirmed, is not counted (one frame of doubt)
+        assert_eq!(account(&[0, 1, 5002]).frames_missing, 0);
+    }
+
+    #[test]
+    fn a_sender_restart_behind_is_not_followed() {
+        // the baseline never moves back: restart the receiver with the sender
+        let r = account(&[20_000, 20_001, 0, 1, 2, 4]);
+        assert_eq!((r.frames_missing, r.frames_stray), (0, 4));
+    }
+
+    #[test]
+    fn single_spoofs_inside_the_old_window_fake_no_loss() {
+        let mut seqs: Vec<u16> = (0..50).collect();
+        seqs.push(1049); // 1000 ahead
+        seqs.extend(50..60);
+        seqs.extend(70..80); // a real gap of 10
+        let r = account(&seqs);
+        assert_eq!(
+            (r.frames_missing, r.frames_stray, r.frames_late),
+            (10, 1, 0)
+        );
+        // chained single spoofs, each 1024 ahead
+        let mut seqs: Vec<u16> = (0..50).collect();
+        seqs.extend((1..=5).map(|k| 49 + 1024 * k));
+        seqs.extend(50..60);
+        assert_eq!(account(&seqs).frames_missing, 0);
+        // across the wrap
+        let mut seqs: Vec<u16> = (0xFFF0..=0xFFFF).collect();
+        seqs.push(0x0300);
+        seqs.extend(0..20);
+        assert_eq!(account(&seqs).frames_missing, 0);
+        // at the start
+        assert_eq!(account(&[0, 1000, 1, 2, 3]).frames_missing, 0);
+        assert_eq!(account(&[3000, 3500, 0, 1, 2, 3]).frames_missing, 0);
+    }
+
+    #[test]
+    fn an_injection_while_a_real_gap_is_pending_changes_nothing() {
+        let r = account(&[0, 1, 200, 5000, 201, 202]);
+        assert_eq!((r.frames_missing, r.frames_stray), (198, 1));
+    }
+
+    #[test]
+    fn replays_from_far_behind_fake_no_loss() {
+        let mut seqs: Vec<u16> = (0..3000).collect();
+        seqs.extend(100..110); // ten consecutive frames replayed from 2900 behind
+        seqs.extend(3000..3010);
+        let r = account(&seqs);
+        assert_eq!((r.frames_missing, r.frames_stray), (0, 10));
+    }
+
+    #[test]
+    fn replayed_runs_and_a_stray_first_frame_fake_no_loss() {
+        // 10 ascending replays just behind, then honest frames: nothing counted missing
+        let mut seqs: Vec<u16> = (0..300).collect();
+        seqs.extend(100..110);
+        seqs.extend(300..310);
+        let r = account(&seqs);
+        assert_eq!((r.frames_missing, r.frames_late), (0, 10));
+        // a spoofed first frame far from the honest stream is a stray, not a gap
+        let r = account(&[0, 12_000, 12_001, 12_002]);
+        assert_eq!((r.frames_missing, r.frames_stray), (0, 1));
+        // the first two frames still count a real gap between them
+        assert_eq!(account(&[5, 7, 8]).frames_missing, 1);
+    }
+
+    #[test]
+    fn frame_counted_once() {
+        let mut f = Fragmenter::new(0).unwrap();
+        let a = f.fragment(1, 0, &obj(600, 2)).unwrap();
+        let mut r = Reassembler::new();
+        r.push(&a[0]);
+        // same object id, different objlen: CRC-valid, inconsistent
+        let mut g = Fragmenter::new(0).unwrap();
+        g.seq = 1;
+        let b = g.fragment(1, 0, &obj(300, 3)).unwrap();
+        r.push(&b[1]);
+        assert_eq!(
+            (r.frames_ok, r.frames_bad),
+            (1, 1),
+            "bad frame also counted ok"
+        );
     }
 
     #[test]
