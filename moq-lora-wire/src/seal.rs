@@ -148,7 +148,9 @@ impl ObjectSealer {
             }
             let salt: [u8; SALT_LEN] = sealed[..SALT_LEN].try_into().unwrap();
             // A salt is cached only once an object under it authenticates, so a forged
-            // object 0 can't push the real subkey out.
+            // object 0 can't push the real subkey out. A replayed object 0 from an older
+            // run does authenticate; two of them evict the live salt until its next
+            // object 0. Replay is out of scope (REVIEW.md, "No replay window").
             let fresh = !self.keys.iter().any(|(s, _)| *s == salt);
             let derived = fresh.then(|| self.derive(&salt));
             let key = match &derived {
@@ -170,14 +172,19 @@ impl ObjectSealer {
                 return None;
             }
             let prefix = &sealed[..PREFIX_LEN];
-            let (_, key) = self.keys.iter().find(|(s, _)| &s[..PREFIX_LEN] == prefix)?;
-            let mut buf = sealed[PREFIX_LEN..].to_vec();
-            let n = key
-                .open_in_place(nonce(prefix, group, obj), &aad, &mut buf)
-                .ok()?
-                .len();
-            buf.truncate(n);
-            Some(buf)
+            // Two cached salts can share a prefix by chance, so try each match.
+            self.keys
+                .iter()
+                .filter(|(s, _)| &s[..PREFIX_LEN] == prefix)
+                .find_map(|(_, key)| {
+                    let mut buf = sealed[PREFIX_LEN..].to_vec();
+                    let n = key
+                        .open_in_place(nonce(prefix, group, obj), &aad, &mut buf)
+                        .ok()?
+                        .len();
+                    buf.truncate(n);
+                    Some(buf)
+                })
         }
     }
 }
@@ -381,6 +388,43 @@ mod tests {
         );
         // a wrong-length key is refused
         assert!(ObjectSealer::new(Cipher::Aes128Gcm, &key).is_err());
+    }
+
+    #[test]
+    fn the_previous_salt_still_opens_after_a_switch() {
+        // late objects of the old run still decrypt after the sender redraws its salt
+        let key = [5u8; 32];
+        let mut tx = ObjectSealer::new(Cipher::Aes256Gcm, &key).unwrap();
+        let mut rx = ObjectSealer::new(Cipher::Aes256Gcm, &key).unwrap();
+        let (a, b, c) = ([1u8; SALT_LEN], [2u8; SALT_LEN], [3u8; SALT_LEN]);
+        let late_a = tx.seal(&a, 9, 3, b"late");
+        assert!(rx.open(9, 0, &tx.seal(&a, 9, 0, b"a0")).is_some());
+        assert!(rx.open(0, 0, &tx.seal(&b, 0, 0, b"b0")).is_some());
+        assert_eq!(rx.open(9, 3, &late_a).as_deref(), Some(&b"late"[..]));
+        // a third salt pushes out the oldest
+        assert!(rx.open(0, 0, &tx.seal(&c, 0, 0, b"c0")).is_some());
+        assert!(rx.open(9, 3, &late_a).is_none());
+        assert!(rx.open(0, 1, &tx.seal(&b, 0, 1, b"b1")).is_some());
+    }
+
+    #[test]
+    fn salts_sharing_a_prefix_both_open() {
+        let key = [6u8; 32];
+        let mut tx = ObjectSealer::new(Cipher::ChaCha20Poly1305, &key).unwrap();
+        let mut rx = ObjectSealer::new(Cipher::ChaCha20Poly1305, &key).unwrap();
+        let a = [7u8; SALT_LEN];
+        let mut b = a;
+        b[SALT_LEN - 1] = 8; // same first 4 bytes
+        assert!(rx.open(1, 0, &tx.seal(&a, 1, 0, b"a0")).is_some());
+        assert!(rx.open(2, 0, &tx.seal(&b, 2, 0, b"b0")).is_some());
+        assert_eq!(
+            rx.open(1, 1, &tx.seal(&a, 1, 1, b"a1")).as_deref(),
+            Some(&b"a1"[..])
+        );
+        assert_eq!(
+            rx.open(2, 1, &tx.seal(&b, 2, 1, b"b1")).as_deref(),
+            Some(&b"b1"[..])
+        );
     }
 
     #[test]

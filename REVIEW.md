@@ -40,9 +40,11 @@ README and HOWTO now say the same thing in the RF notes.
 
 ### No replay window, and object 0 always opens a group. Deferred.
 
-`moq-lora-wire/src/seal.rs:91` (`open`) decrypts any ciphertext whose embedded session
-id, together with the cleartext group and object ids, matches the key. It does not
-remember which `(session, group, obj)` values it has already accepted.
+`ObjectSealer::open` (`moq-lora-wire/src/seal.rs`) decrypts any ciphertext whose salt,
+together with the cleartext group and object ids, matches the key. It does not
+remember which `(salt, group, obj)` values it has already accepted. Replayed object 0s
+from two older runs also push the live salt out of the receiver's two-entry cache, so
+the live run's objects fail as `auth_fail` until its next object 0.
 `Reassembler` (`moq-lora-wire/src/lib.rs:507`) remembers only the single object it just
 finished. `GroupGate::accept` (`moq-lora-wire/src/lib.rs:575`) treats every `obj == 0`
 as a fresh group and clears `broken`.
@@ -87,11 +89,13 @@ draws a 96-bit salt and encrypts under a subkey derived from the key and the sal
 the clear, other objects its first 4 bytes. The sender draws a new salt when the
 16-bit group id wraps. Reusing a keystream now needs two equal 96-bit salts. The
 receiver caches a salt's subkey only after an object under it authenticates, so a
-forged object 0 can't evict the real one. Frame `VERSION` is 4 for this format.
+forged object 0 can't evict the real one (a replayed one can; see "No replay window").
+Until an object 0 authenticates, a receiver that joins mid-run counts the rest of that
+group as `auth_fail`, so that counter mixes "no key yet" with tampering. Frame `VERSION` is 4 for this format.
 
 Tag comparison is rind's `ct_equal` (ChaCha20-Poly1305 and AES-GCM `open`). This crate
 does not compare tags itself. rind's `Key` drop wipes its copy; `open_sealer`
-(`seal.rs:208`) wipes the hex file bytes and the temporary key after `Key::new`.
+wipes the hex file bytes and the temporary key after `Key::new`.
 
 ## Medium
 
@@ -148,7 +152,7 @@ and was not touched.
 
 ### Key file mode is checked, then the file is read. Fixed for the check; TOCTOU deferred.
 
-`moq-lora-wire/src/seal.rs:171`. On Unix the file must be a regular file with no
+`read_key_file` (`moq-lora-wire/src/seal.rs`). On Unix the file must be a regular file with no
 group/other permission bits. A mode change between `metadata` and `read` is not
 closed. Good enough for a pre-shared key on a single-user bench machine.
 
@@ -209,7 +213,7 @@ was left.
 | Serial and replay lines capped at 1024 bytes | `lib.rs:48`, recv `main.rs:280` and `:367`, send `main.rs:152` | real `R` lines are about 550 bytes |
 | Barcode read/write refuse a tiny plane instead of panicking | `stamp.rs:20`, `stamp.rs:47` | 320x240 is unchanged |
 | Annex-B tail above `MAX_OBJECT` is dropped | `annexb.rs:54` | a sendable access unit is still emitted |
-| Key file must be mode 0600 (or stricter); hex bytes wiped | `seal.rs:171`, `seal.rs:208` | both binaries use `open_sealer` |
+| Key file must be mode 0600 (or stricter); hex bytes wiped | `read_key_file`, `open_sealer` in `seal.rs` | both binaries use `open_sealer` |
 | Profile parser rejects bitrate 0 and a suffix other than `x` | `lib.rs:95` | `0:...` used to panic in the airtime division |
 | Per-run subkeys from a 96-bit salt replace the 32-bit session id | `seal.rs` | no birthday bound at 2^16 runs |
 | Empty `FskLongRx::payload` does not panic | `vendor/sx1276/src/lib.rs:169` | |

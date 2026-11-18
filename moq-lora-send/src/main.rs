@@ -796,6 +796,8 @@ fn main() -> Result<()> {
     };
     let mut salt = random_salt();
     let mut aead_bytes = 0u64;
+    let mut sealed = 0u64; // objects sealed in total
+    let mut salt_used = false; // anything sealed under the current salt
     let (mut last_frame_no, mut uncaptured) = (0u32, 0u64);
     let mut gop_overrun = false;
     let mut seal_s = 0f64;
@@ -832,9 +834,10 @@ fn main() -> Result<()> {
                 return Ok(());
             };
             if key {
-                if g == 0 && objects > 0 {
+                if g == 0 && salt_used {
                     // nonces repeat once the group id wraps, so take a new subkey
                     salt = random_salt();
+                    salt_used = false;
                 }
                 keys += 1;
             }
@@ -853,6 +856,8 @@ fn main() -> Result<()> {
                 data = sl.seal(&salt, group, obj, &data);
                 seal_s += t.elapsed().as_secs_f64();
                 aead_bytes += (data.len() - plain_len) as u64;
+                sealed += 1;
+                salt_used = true;
             }
             obj_bytes += data.len() as u64;
             let frames = match frag.fragment(group, obj, &data) {
@@ -955,11 +960,11 @@ fn main() -> Result<()> {
         100.0 * busy / wall, st.bytes as f64 * 8.0 / wall, st.objects_dropped, st.groups_dropped, st.tx_errors, st.max_queue_frames, qdrops.objects, qdrops.groups,
         sealer.as_ref().map(|x| x.cipher.name()).unwrap_or("none"),
         moq_lora_wire::OBJ_HDR_LEN,
-        aead_bytes as f64 / objs,
+        aead_bytes as f64 / sealed.max(1) as f64,
         st.frames as f64 * moq_lora_wire::HDR_LEN as f64 / objs,
         (st.bytes as f64 - st.frames as f64 * moq_lora_wire::HDR_LEN as f64 - obj_bytes as f64) / objs,
         (st.bytes as f64 - au_bytes as f64) / objs,
-        1e6 * seal_s / objs,
+        1e6 * seal_s / sealed.max(1) as f64,
         100.0 * cpu_self / wall, 100.0 * cpu_child / wall, 100.0 * (cpu_self + cpu_child) / wall,
         std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
         if a.loopback.is_some() { "loopback" } else if a.catwan.is_some() { "catwan" } else { "sx1276" }
