@@ -38,26 +38,35 @@ Left unchanged. The measured image is `firmware/catwan-fw-v5.uf2` (sha256 in
 not done here. The module comment at `firmware/catwan-fw/src/main.rs:16` says so.
 README and HOWTO now say the same thing in the RF notes.
 
-### No replay window, and object 0 always opens a group. Deferred.
+### Replayed frames. Mostly fixed; long replays deferred.
 
-`moq-lora-wire/src/seal.rs:91` (`open`) decrypts any ciphertext whose embedded session
-id, together with the cleartext group and object ids, matches the key. It does not
-remember which `(session, group, obj)` values it has already accepted.
-`Reassembler` (`moq-lora-wire/src/lib.rs:507`) remembers only the single object it just
-finished. `GroupGate::accept` (`moq-lora-wire/src/lib.rs:575`) treats every `obj == 0`
-as a fresh group and clears `broken`.
+`Reassembler` (`moq-lora-wire/src/lib.rs`) tracks the newest object it has placed.
+Frames for an object behind it are counted as `radio_frames_stale` and never
+reassembled, so a replayed old object 0 no longer reaches `GroupGate` as a new group
+and a replayed frame no longer finalizes the object in progress. A frame far ahead is
+held until the next frame continues from it, so one injected frame can't stall the
+stream. Measured: 17 replayed frames in a 30 s loopback run used to raise
+`objects_lost` from 15 to 60; now it stays at 15.
 
-An active attacker who recorded a valid object can replay it later. If it is object 0,
-the gate will hand it to the decoder as a new group. Integrity of the live picture
-fails open under replay; confidentiality and tag checks still hold. A replay bitmap
-would change what a lossy but honest link delivers (a late fragment of an earlier
-object can still complete today). Not changed.
+What remains:
+
+* A replay of `RECOVER_RUN` (32) or more consecutive old frames is followed, as the
+  way back after two forged frames confirm a wrong jump, so it can deliver old objects
+  again. With `--key-file` those still authenticate: `ObjectSealer::open` does not
+  remember which `(salt, group, obj)` it has accepted.
+* Replayed object 0s from two older runs push the live salt out of the receiver's
+  two-entry key cache, so the live run's objects fail as `auth_fail` until its next
+  object 0.
+* One forged frame just ahead (in its group, or an early object up to 2 groups on)
+  costs up to about 32 honest frames, about two GOPs.
+
+Closing these needs authenticated sequence numbers (see the next section).
 
 ### Radio headers and FEC are outside the AEAD. By design.
 
 `moq-lora-wire/src/seal.rs` binds only `group` and `obj` as AAD; the nonce is built
-from the run's id, `group` and `obj`. Sequence number, fragment index, `nfrag`, the parity bit,
-`k`, and `objlen` are clear and unauthenticated. What that lets an on-path attacker do,
+from the run's salt, `group` and `obj`. Sequence number, fragment index, `nfrag`, the
+parity bit, `k`, and `objlen` are clear and unauthenticated. What that lets an on-path attacker do,
 with `--key-file`:
 
 * Drop, reorder, or retarget fragments, or alter parity: the reassembled object then
@@ -90,21 +99,23 @@ This is the receive path that produced the Pi-side loss numbers. Changing it wou
 change those numbers. Not changed. `FskLongRx::payload` (`:169`) no longer panics when
 no packet is stored (`1..=0` used to panic). That does not change a successful read.
 
-### Nonce uniqueness is a caller contract. Immediate wrap collision fixed; birthday bound deferred.
+### Nonce uniqueness is a caller contract. Fixed with per-run subkeys.
 
-`Nonce::assume_unique_for_key` (`seal.rs:55`) will silently reuse a ChaCha20 or
-AES-GCM keystream if `(session, group, obj)` repeats under one key. The sender
-redraws the session when the 16-bit group id wraps (`moq-lora-send/src/main.rs:567`).
-Two draws used to be allowed to collide, which would reuse every nonce of the
-previous session. `session_after_wrap` (`moq-lora-wire/src/seal.rs:125`) now bumps the
-id when the new draw equals the one that just ended. A collision with an older
-session in the same key's life is still possible (about 2^16 sessions). Rotate the
-key before that. Not a problem for one 330 s run (one group per second wraps after
-about 18 hours).
+`Nonce::assume_unique_for_key` will silently reuse a ChaCha20 or AES-GCM keystream if a
+nonce repeats under one key. Each run used to draw a random 32-bit session id as the
+nonce prefix, so two runs under one key collided after about 2^16 runs. Now each run
+draws a 96-bit salt and encrypts under a subkey derived from the key and the salt
+(HKDF-SHA256, `moq-lora-wire/src/seal.rs`); object 0 of each group carries the salt in
+the clear, other objects its first 4 bytes. The sender draws a new salt when the
+16-bit group id wraps. Reusing a keystream now needs two equal 96-bit salts. The
+receiver caches a salt's subkey only after an object under it authenticates, so a
+forged object 0 can't evict the real one (a replayed one can; see "Replayed frames").
+Until an object 0 authenticates, a receiver that joins mid-run counts the rest of that
+group as `auth_fail`, so that counter mixes "no key yet" with tampering. Frame `VERSION` is 4 for this format.
 
 Tag comparison is rind's `ct_equal` (ChaCha20-Poly1305 and AES-GCM `open`). This crate
 does not compare tags itself. rind's `Key` drop wipes its copy; `open_sealer`
-(`seal.rs:208`) wipes the hex file bytes and the temporary key after `Key::new`.
+wipes the hex file bytes and the temporary key after `Key::new`.
 
 ## Medium
 
@@ -125,12 +136,11 @@ queue stays small (the runs recorded `max_queue_frames` around 50). A faster enc
 or a stalled radio grows it without a cap. A cap would drop groups the current code
 still sends. Not changed.
 
-### Object id 255 starts a new group that may not be a keyframe. Deferred.
+### Object id 255 starts a new group that may not be a keyframe. Fixed.
 
-`moq-lora-send/src/main.rs` (the `key || obj == u8::MAX` branch just above the session
-redraw). The gate will accept that group's object 0 even when it is not an IDR, so
-the decoder can be given a P-frame as a random access point. GOP 15 never reaches
-object 255. Not changed.
+`advance` in `moq-lora-send/src/main.rs` starts a group only on a keyframe; an encoder
+that sends more than 256 frames without one stops the run (`gop_overrun`) instead of
+handing the decoder a P-frame as a random access point.
 
 ### If the capture queue is empty, the object is stamped `frame_no = u32::MAX`. Deferred.
 
@@ -161,7 +171,7 @@ and was not touched.
 
 ### Key file mode is checked, then the file is read. Fixed for the check; TOCTOU deferred.
 
-`moq-lora-wire/src/seal.rs:171`. On Unix the file must be a regular file with no
+`read_key_file` (`moq-lora-wire/src/seal.rs`). On Unix the file must be a regular file with no
 group/other permission bits. A mode change between `metadata` and `read` is not
 closed. Good enough for a pre-shared key on a single-user bench machine.
 
@@ -223,9 +233,9 @@ was left.
 | Serial and replay lines capped at 1024 bytes | `lib.rs:48`, recv `main.rs:280` and `:367`, send `main.rs:152` | real `R` lines are about 550 bytes |
 | Barcode read/write refuse a tiny plane instead of panicking | `stamp.rs:20`, `stamp.rs:47` | 320x240 is unchanged |
 | Annex-B tail above `MAX_OBJECT` is dropped | `annexb.rs:54` | a sendable access unit is still emitted |
-| Key file must be mode 0600 (or stricter); hex bytes wiped | `seal.rs:171`, `seal.rs:208` | both binaries use `open_sealer` |
+| Key file must be mode 0600 (or stricter); hex bytes wiped | `read_key_file`, `open_sealer` in `seal.rs` | both binaries use `open_sealer` |
 | Profile parser rejects bitrate 0 and a suffix other than `x` | `lib.rs:95` | `0:...` used to panic in the airtime division |
-| Session redraw skips an immediate repeat | `seal.rs:125` | only the wrap path |
+| Per-run subkeys from a 96-bit salt replace the 32-bit session id | `seal.rs` | no birthday bound at 2^16 runs |
 | Empty `FskLongRx::payload` does not panic | `vendor/sx1276/src/lib.rs:169` | |
 | Stats line from the stick is JSON-escaped | `moq-lora-recv/src/main.rs:176` | normal `OK S ...` lines are unchanged |
 | `panic = "abort"` on the firmware profiles | `firmware/catwan-fw/Cargo.toml` | thumbv6m cannot unwind; rustc 1.90 would not link without it |
@@ -236,10 +246,10 @@ Tests for the wire fixes are in `moq-lora-wire` (`hostile_frames_do_not_panic`,
 
 ## Crypto notes (what was checked)
 
-* Nonce is 12 bytes, unique per `(session, group, obj)` inside one session. Session
-  is random per process and redrawn on group wrap.
+* Nonce is 12 bytes, unique per `(group, obj)` under one run's subkey; the subkey comes
+  from a random 96-bit salt per run, redrawn on group wrap.
 * AAD is the group and object ids. Moving a ciphertext to another position fails open.
-  Flipping the clear session prefix fails open (it is part of the nonce).
+  Flipping the clear salt prefix fails open (it picks the subkey and is in the nonce).
 * Tag check is rind's constant-time compare, not a `==` in this repo.
 * Key material is a file path, not an argument. The tools refuse a group- or
   world-readable file. No key file is in git, and `.gitignore` ignores
