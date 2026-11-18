@@ -163,12 +163,10 @@ would be a new harness, not a cleanup.
 
 ## Low
 
-### `fn seal` and `mod seal` share a name. Deferred.
+### `fn seal` and `mod seal` shared a name. Fixed.
 
-`moq-lora-wire/src/lib.rs` has both `pub mod seal` (AEAD) and `pub fn seal` (CRC-16).
-Rust allows it (type namespace vs value namespace). It is a bad name. Renaming the
-CRC function is source-compatible only for this repo; it was left so the diff stays
-on the behavior fixes.
+`moq-lora-wire/src/lib.rs` had both `pub mod seal` (AEAD) and `pub fn seal` (CRC-16).
+The CRC function is now `write_crc`, which says what it does.
 
 ### The Pi GPIO glue is copied twice. Deferred.
 
