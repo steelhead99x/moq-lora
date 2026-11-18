@@ -107,7 +107,8 @@ Parts list and pinouts are in the [HOWTO](HOWTO.md#1-hardware).
 
 ## Radio rules
 
-915.0 MHz, +5 dBm (about 3 mW). The tools refuse to transmit at anything else, and they won't
+The tools default to 915.0 MHz at +5 dBm (about 3 mW). They refuse anything outside 902-928 MHz
+and anything within 0.3 MHz of 925.0 MHz, the sender refuses power outside 2 to 5 dBm, and it won't
 transmit at all without `--i-have-an-antenna`. 915 MHz is a licence-free band in the Americas,
 but **not in Europe and many other places**. You are responsible for what you transmit.
 Details in the [HOWTO](HOWTO.md#9-radio-rules).
@@ -131,7 +132,8 @@ Details in the [HOWTO](HOWTO.md#9-radio-rules).
 * The bitrate is set by hand. There's no adaptation.
 * The ffmpeg CLI decoder holds back one frame (~67 ms), and that's included in the latency numbers.
 * Encryption uses a pre-shared key. Frames are private and tamper-proof, but a recorded frame
-  can be replayed and the radio headers aren't encrypted.
+  can be replayed and the radio headers aren't encrypted. Each run draws a random 32-bit session
+  id, so rotate the key long before 2^16 runs, when two runs become likely to share one.
   See [ROADMAP.md](ROADMAP.md) and the code review in [REVIEW.md](REVIEW.md).
 
 ## License

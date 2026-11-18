@@ -102,11 +102,15 @@ const FONT: &[(char, [u8; 5])] = &[
     (' ', [0, 0, 0, 0, 0]),
 ];
 
-/// White text on a black box into the luma plane, `s` = pixel scale.
-pub fn draw_text(y: &mut [u8], w: usize, x0: usize, y0: usize, text: &str, s: usize) {
+/// White text on a black box into the luma plane (`w` x `h`), `s` = pixel scale.
+/// Clipped to the plane: text that does not fit is cut off, never written past it.
+pub fn draw_text(y: &mut [u8], w: usize, h: usize, x0: usize, y0: usize, text: &str, s: usize) {
+    if w.checked_mul(h).is_none_or(|p| y.len() < p) {
+        return;
+    }
     let cw = 4 * s;
     let bw = text.chars().count() * cw + s;
-    for yy in y0..y0 + 7 * s {
+    for yy in y0..(y0 + 7 * s).min(h) {
         for xx in x0..(x0 + bw).min(w) {
             y[yy * w + xx] = 16;
         }
@@ -123,7 +127,7 @@ pub fn draw_text(y: &mut [u8], w: usize, x0: usize, y0: usize, text: &str, s: us
                     for dy in 0..s {
                         for dx in 0..s {
                             let (px, py) = (x0 + s + ci * cw + col * s + dx, y0 + s + r * s + dy);
-                            if px < w {
+                            if px < w && py < h {
                                 y[py * w + px] = 235;
                             }
                         }
@@ -141,7 +145,10 @@ mod tests {
     fn barcode_roundtrip() {
         let (w, h) = (320, 240);
         let mut f = vec![90u8; w * h * 3 / 2];
-        draw_text(&mut f, w, 4, 4, "12:34:56.789", 4);
+        draw_text(&mut f, w, h, 4, 4, "12:34:56.789", 4);
+        // taller than the plane: clipped, not a panic (used to index past the frame)
+        draw_text(&mut f, w, 20, 2, 10, "12:34", 8);
+        draw_text(&mut [0u8; 10], w, h, 0, 0, "1", 1);
         for v in [0u32, 1, 0xdead_beef, 123_456_789] {
             write_barcode(&mut f, w, h, v);
             assert_eq!(read_barcode(&f, w, h), Some(v));
