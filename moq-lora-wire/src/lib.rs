@@ -534,8 +534,8 @@ impl Partial {
 /// at most `SEQ_STEP - 1` frames to it (a step that small looks like honest loss).
 ///
 /// Limits: sequence numbers are not authenticated, so two consecutive forged frames far
-/// ahead are a confirmed gap (closing that needs the frame header under the AEAD,
-/// `quest/m1/aead-headers.md`); and a 16-bit counter can't tell a frame more than 32768
+/// ahead are a confirmed gap (headers stay clear by design; see REVIEW.md, "Radio
+/// headers and FEC are outside the AEAD"); and a 16-bit counter can't tell a frame more than 32768
 /// behind (about 4 minutes at 300 kbit/s) from one ahead, so consecutive replays that old
 /// count as a gap too.
 pub const SEQ_STEP: u16 = 64;
