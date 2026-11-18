@@ -512,9 +512,17 @@ impl Partial {
     }
 }
 
-/// Largest sequence step one frame may make on its own, in frames (about 7 s at
-/// 300 kbit/s). A frame further from the baseline, ahead or behind, moves it only when
-/// the next frame continues from it, so one bad sequence number can't fake or hide loss.
+/// Largest forward step one frame may make on its own, in frames (about 0.45 s at
+/// 300 kbit/s). A larger step moves the baseline only when the next frame continues from
+/// it, so one garbled, injected or replayed sequence number can't fake or hide loss.
+///
+/// Sequence numbers are not authenticated, so this is not proof against an active
+/// injector: two consecutive forged frames far ahead are a confirmed gap. Closing that
+/// needs the frame header under the AEAD (`quest/m1/aead-headers.md`).
+pub const SEQ_STEP: u16 = 64;
+
+/// How far behind the newest a frame counts as `late` (reordered or replayed) rather
+/// than `stray`. Neither moves the baseline.
 pub const SEQ_WINDOW: u16 = 1024;
 
 /// Rebuilds objects from radio frames. Objects arrive one after another from a single
@@ -537,13 +545,12 @@ pub struct Reassembler {
     pub frames_missing: u64,
     pub frames_bad: u64,
     pub frames_dup: u64,
-    /// Frames a little behind the newest (within [`SEQ_WINDOW`]): reordered or replayed,
-    /// or a sender that restarted its counter just behind, until it passes the old count.
-    /// The baseline never moves back for them, so a replay can't fake a gap; the cost is
-    /// that loss during such a restart, at most `SEQ_WINDOW` frames, goes uncounted.
+    /// Frames a little behind the newest (within [`SEQ_WINDOW`]): reordered or replayed.
     pub frames_late: u64,
-    /// Frames far from the baseline, either way, that the next frame did not continue
-    /// from: a garbled or injected sequence number, not a gap.
+    /// Frames further behind, or far ahead with no frame continuing from them: garbled,
+    /// injected or replayed sequence numbers, not a gap. The baseline never moves back,
+    /// so a sender that restarts its counter mid-run is not followed: restart the
+    /// receiver with it, as the bench scripts do.
     pub frames_stray: u64,
     pub fec_recovered: u64,
 }
@@ -585,7 +592,7 @@ impl Reassembler {
                 .iter()
                 .flatten()
                 .copied()
-                .find(|&c| (1..=SEQ_WINDOW).contains(&seq.wrapping_sub(c)));
+                .find(|&c| (1..=SEQ_STEP).contains(&seq.wrapping_sub(c)));
             match follows {
                 Some(c) => {
                     self.frames_missing += seq.wrapping_sub(c) as u64 - 1;
@@ -607,22 +614,25 @@ impl Reassembler {
         if d == 0 {
             self.frames_dup += 1;
             return false;
-        } else if d <= SEQ_WINDOW {
+        } else if d <= SEQ_STEP {
             if self.jump.take().is_some() {
                 self.frames_stray += 1; // the next frame did not follow it
             }
             self.frames_missing += d as u64 - 1;
             self.last_seq = Some(seq);
-        } else if d >= SEQ_WINDOW.wrapping_neg() {
-            self.frames_late += 1;
+        } else if d >= 0x8000 {
+            // behind: late if close, stray if far; never moves the baseline back
+            if d >= SEQ_WINDOW.wrapping_neg() {
+                self.frames_late += 1;
+            } else {
+                self.frames_stray += 1;
+            }
         } else {
             match self.jump {
-                Some(j) if (1..=SEQ_WINDOW).contains(&seq.wrapping_sub(j)) => {
-                    // confirmed: count the gap up to the jump if it went forward
-                    let to_jump = j.wrapping_sub(last);
-                    if to_jump < 0x8000 {
-                        self.frames_missing += to_jump as u64 - 1;
-                    }
+                Some(j) if (1..=SEQ_STEP).contains(&seq.wrapping_sub(j)) => {
+                    // confirmed by a frame that follows it: a real gap up to the jump,
+                    // and any frames between the jump and this one
+                    self.frames_missing += j.wrapping_sub(last) as u64 - 1;
                     self.frames_missing += seq.wrapping_sub(j) as u64 - 1;
                     self.last_seq = Some(seq);
                     self.jump = None;
@@ -972,10 +982,45 @@ mod tests {
     }
 
     #[test]
-    fn a_sender_restart_far_behind_rebases_the_count() {
-        // confirmed by the next frame, no loss counted for the restart itself
+    fn a_sender_restart_behind_is_not_followed() {
+        // the baseline never moves back: restart the receiver with the sender
         let r = account(&[20_000, 20_001, 0, 1, 2, 4]);
-        assert_eq!((r.frames_missing, r.frames_stray), (1, 0));
+        assert_eq!((r.frames_missing, r.frames_stray), (0, 4));
+    }
+
+    #[test]
+    fn single_spoofs_inside_the_old_window_fake_no_loss() {
+        let mut seqs: Vec<u16> = (0..50).collect();
+        seqs.push(1049); // 1000 ahead
+        seqs.extend(50..60);
+        seqs.extend(70..80); // a real gap of 10
+        let r = account(&seqs);
+        assert_eq!(
+            (r.frames_missing, r.frames_stray, r.frames_late),
+            (10, 1, 0)
+        );
+        // chained single spoofs, each 1024 ahead
+        let mut seqs: Vec<u16> = (0..50).collect();
+        seqs.extend((1..=5).map(|k| 49 + 1024 * k));
+        seqs.extend(50..60);
+        assert_eq!(account(&seqs).frames_missing, 0);
+        // across the wrap
+        let mut seqs: Vec<u16> = (0xFFF0..=0xFFFF).collect();
+        seqs.push(0x0300);
+        seqs.extend(0..20);
+        assert_eq!(account(&seqs).frames_missing, 0);
+        // at the start
+        assert_eq!(account(&[0, 1000, 1, 2, 3]).frames_missing, 0);
+        assert_eq!(account(&[3000, 3500, 0, 1, 2, 3]).frames_missing, 0);
+    }
+
+    #[test]
+    fn replays_from_far_behind_fake_no_loss() {
+        let mut seqs: Vec<u16> = (0..3000).collect();
+        seqs.extend(100..110); // ten consecutive frames replayed from 2900 behind
+        seqs.extend(3000..3010);
+        let r = account(&seqs);
+        assert_eq!((r.frames_missing, r.frames_stray), (0, 10));
     }
 
     #[test]
