@@ -51,6 +51,11 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 * The bench scripts quote key paths and pass the receiver's key separately.
 * The Pi radio setup code is shared by the sender and receiver in a new `moq-subghz-pi` crate.
 
+### Results
+
+* A loss sweep with no radio in it, in `results/loopback/`: what the viewer sees from 0 to 10%
+  radio loss, with and without FEC, and under the loss patterns of the measured radio runs.
+
 ### Docs
 
 * README and HOWTO rewritten for a public release. Added SECURITY, CONTRIBUTING and this file.

@@ -1,0 +1,5 @@
+run,frames_sent,frames_lost,loss_pct,loss_events,mean_burst,p95_burst,max_burst,single_frame_events_pct
+r300_off,38717,581,1.501,497,1.17,2,15,89.9
+r300_on,39208,613,1.563,541,1.13,2,4,90.6
+r350_off,38738,989,2.553,907,1.09,2,4,92.6
+r350_on,39088,1148,2.937,1043,1.1,2,4,91.8

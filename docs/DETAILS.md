@@ -70,6 +70,12 @@ antennas about 1 m apart.
 All eight runs with every column (loss, CPU, overhead, both directions) are in
 [`results/video/table.md`](../results/video/table.md). The raw logs are next to it.
 
+**How it holds up as the link gets worse** is in
+[`results/loopback/`](../results/loopback/README.md). That sweep has no radio in it: the real tools
+run through a file with radio frames removed. Short version: with the parity frames on, random
+loss of up to about 1% costs under 2% of the picture. The loss pattern of the real radio runs
+costs about twice what random loss does.
+
 These runs were measured on 2026-11-17. The tools have changed since then (see the
 [changelog](../CHANGELOG.md)), and the newer code has only been run through the no-radio
 loopback, not on the radios. The table will be re-measured before a tagged release.
