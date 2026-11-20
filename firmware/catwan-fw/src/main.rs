@@ -14,7 +14,7 @@
 //! Opening the port at 1200 baud and dropping DTR also reboots into the bootloader.
 //!
 //! `L` and `F` accept 2..=17 dBm and program whatever carrier frequency they are
-//! given. The host tools (`moq-lora-send`, `moq-lora-recv`) refuse anything above
+//! given. The host tools (`moq-subghz-send`, `moq-subghz-recv`) refuse anything above
 //! +5 dBm and anything outside 902-928 MHz (and 925.0 MHz) before they send these
 //! commands. The measured image is `firmware/catwan-fw-v5.uf2`; it was not
 //! regenerated here. Tightening the clamp means a new image and a reflash.

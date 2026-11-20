@@ -1,7 +1,6 @@
 # moq-subghz
 
-DIY MoQ over LoRa. Formerly named moq-lora; the LoRa radio is still the first build. The crates and
-binaries keep their `moq-lora-*` names for now.
+DIY MoQ over LoRa. The LoRa radio is the first build.
 
 **DIY MoQ over LoRa: live video from a Raspberry Pi over a LoRa radio chip, written in Rust.**
 
@@ -34,7 +33,7 @@ version on a radio instead of QUIC. The radio side does not use moq.dev's code. 
 republish step does use moq.dev's Rust libraries. This project is not affiliated with or endorsed
 by moq.dev.
 
-Want viewers on the internet? `moq-lora-recv --publish` republishes the stream to a moq.dev relay
+Want viewers on the internet? `moq-subghz-recv --publish` republishes the stream to a moq.dev relay
 or moq.pro; see [docs/MOQ.md](docs/MOQ.md).
 
 ## Try it (no radio needed)
@@ -43,8 +42,8 @@ You need Rust 1.90+ and ffmpeg.
 
 ```sh
 cargo build --release
-./target/release/moq-lora-send --loopback /tmp/air.txt --fec-k 8 --secs 20
-./target/release/moq-lora-recv --replay /tmp/air.txt --paced --play --decode --out /tmp/run
+./target/release/moq-subghz-send --loopback /tmp/air.txt --fec-k 8 --secs 20
+./target/release/moq-subghz-recv --replay /tmp/air.txt --paced --play --decode --out /tmp/run
 ```
 
 With real radios, follow **[HOWTO.md](HOWTO.md)**.

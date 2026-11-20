@@ -68,9 +68,9 @@ cargo build --release
 
 # The Pi binaries: static, no cross compiler needed
 rustup target add armv7-unknown-linux-musleabihf
-cargo build --release -p moq-lora-send -p moq-lora-recv --target armv7-unknown-linux-musleabihf
-ssh pi mkdir -p moq-lora
-scp target/armv7-unknown-linux-musleabihf/release/moq-lora-{send,recv} pi:moq-lora/
+cargo build --release -p moq-subghz-send -p moq-subghz-recv --target armv7-unknown-linux-musleabihf
+ssh pi mkdir -p moq-subghz
+scp target/armv7-unknown-linux-musleabihf/release/moq-subghz-{send,recv} pi:moq-subghz/
 ```
 
 The only thing the Pi needs besides these two files is ffmpeg.
@@ -104,16 +104,16 @@ python3 elf2uf2.py target/thumbv6m-none-eabi/release/catwan-fw catwan-fw.uf2
 Screw on both antennas. Start the receiver on the laptop first, because it waits for frames:
 
 ```sh
-./target/release/moq-lora-recv --port /dev/cu.usbmodemXXXX --secs 120 --out runs/first --play --decode
+./target/release/moq-subghz-recv --port /dev/cu.usbmodemXXXX --secs 120 --out runs/first --play --decode
 ```
 
 Then start the sender on the Pi:
 
 ```sh
-cd ~/moq-lora && ./moq-lora-send --fec-k 8 --secs 110 --i-have-an-antenna
+cd ~/moq-subghz && ./moq-subghz-send --fec-k 8 --secs 110 --i-have-an-antenna
 ```
 
-A window called **SX1276 FSK live video (moq-lora)** opens with the test pattern, a running clock
+A window called **SX1276 FSK live video (moq-subghz)** opens with the test pattern, a running clock
 and a barcode strip along the bottom. When the run ends, both programs print a one-line JSON summary.
 
 The receiver also saves these files in `runs/first/`:
@@ -161,7 +161,7 @@ The barcode gives you capture time from the sender's clock, but the receiver rea
 clock. Those two clocks need comparing:
 
 ```sh
-./target/release/moq-lora-recv --clock-check pi
+./target/release/moq-subghz-recv --clock-check pi
 # {"host":"pi","best_rtt_ms":11.2,"remote_minus_local_ms":-23.4}
 ```
 
@@ -174,7 +174,7 @@ export PORT=/dev/cu.usbmodemXXXX PI=pi
 scripts/run2.sh  myrun 300000:100000:6 330 --fec-k 8     # Pi to laptop
 scripts/rev.sh   myrun 300000:100000:12 330 --fec-k 8    # laptop to Pi
 scripts/bench.sh                                         # the full 8-run set from the README
-cargo run --release -p moq-lora-report -- runs/*/        # results table
+cargo run --release -p moq-subghz-report -- runs/*/        # results table
 ```
 
 More detail is in [scripts/README.md](scripts/README.md). The meaning of each column is in
@@ -185,10 +185,10 @@ More detail is in [scripts/README.md](scripts/README.md). The meaning of each co
 * **Encryption.** Each frame can be encrypted with ChaCha20-Poly1305 (from
   [rind](https://github.com/kixel-ai/rind)). Make one key and give the same file to both ends:
   ```sh
-  ( umask 077; openssl rand -hex 32 > moq-lora-key.hex )    # mode 0600, never commit it
-  scp moq-lora-key.hex pi:
-  ./moq-lora-send ... --key-file ~/moq-lora-key.hex         # on the Pi
-  ./moq-lora-recv ... --key-file moq-lora-key.hex           # on the laptop
+  ( umask 077; openssl rand -hex 32 > moq-subghz-key.hex )    # mode 0600, never commit it
+  scp moq-subghz-key.hex pi:
+  ./moq-subghz-send ... --key-file ~/moq-subghz-key.hex         # on the Pi
+  ./moq-subghz-recv ... --key-file moq-subghz-key.hex           # on the laptop
   ```
   It costs 20 bytes per frame, 28 on the first of each GOP, which carries the run's
   salt. A frame that fails the check is treated as lost. Know what this doesn't cover:
@@ -196,8 +196,8 @@ More detail is in [scripts/README.md](scripts/README.md). The meaning of each co
   sent unencrypted, so an attacker can cause loss or skew the loss counts. Apart from
   replaying recorded frames, it can't read or change the picture. The tools refuse a key
   file that other users can read.
-* **Reverse direction (laptop to Pi).** Run `moq-lora-send --catwan /dev/cu.usbmodemXXXX` on
-  the laptop and `moq-lora-recv --radio` on the Pi. Use a longer preamble, `300000:100000:12`
+* **Reverse direction (laptop to Pi).** Run `moq-subghz-send --catwan /dev/cu.usbmodemXXXX` on
+  the laptop and `moq-subghz-recv --radio` on the Pi. Use a longer preamble, `300000:100000:12`
   (or `350000:100000:14:x`). The Pi's HAT can't signal when data has arrived, so the Pi has to
   keep checking, which uses a whole core. Expect more loss than the forward direction.
 * **A camera.** `--src /dev/video0` should work but is untested. The clock and barcode are drawn

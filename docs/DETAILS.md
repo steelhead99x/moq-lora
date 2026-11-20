@@ -11,7 +11,7 @@ does not use moq.dev's code; the optional republish step does use moq.dev's Rust
 
 ![A frame received over the radio link, encrypted](../media/frame-f350-rind-45s-3x.png)
 
-▶ [60 seconds of received video](../media/moq-lora-f350-rind-60s.mp4) (exactly what came out of the receiver, not re-encoded).
+▶ [60 seconds of received video](../media/moq-subghz-f350-rind-60s.mp4) (exactly what came out of the receiver, not re-encoded).
 
 The Semtech SX1276 is the chip inside most LoRa gadgets. LoRa itself is slow (tens of kbit/s),
 but the same chip has a plain FSK mode that does 300 kbit/s. That's enough for a small, low-bitrate
@@ -97,8 +97,8 @@ You need Rust 1.90+ and ffmpeg. This runs the full pipeline through a file inste
 
 ```sh
 cargo build --release
-./target/release/moq-lora-send --loopback /tmp/air.txt --fec-k 8 --secs 20
-./target/release/moq-lora-recv --replay /tmp/air.txt --paced --play --decode --out /tmp/run
+./target/release/moq-subghz-send --loopback /tmp/air.txt --fec-k 8 --secs 20
+./target/release/moq-subghz-recv --replay /tmp/air.txt --paced --play --decode --out /tmp/run
 ```
 
 The first command records 20 s of "air" to a file at real radio speed. The second plays it back and
@@ -129,11 +129,11 @@ Details in the [HOWTO](../HOWTO.md#9-radio-rules).
 
 | path | what |
 |---|---|
-| `moq-lora-send` | sender: ffmpeg capture + x264, barcode, objects, radio TX |
-| `moq-lora-recv` | receiver: radio RX, reassembly, GOP gate, ffplay, recording, latency |
-| `moq-lora-wire` | the format: framing, FEC, Annex-B splitter, barcode, encryption |
-| `moq-lora-pi` | the Pi's radio HAT glue (SPI + GPIO), shared by sender and receiver |
-| `moq-lora-report` | turns run logs into the results table |
+| `moq-subghz-send` | sender: ffmpeg capture + x264, barcode, objects, radio TX |
+| `moq-subghz-recv` | receiver: radio RX, reassembly, GOP gate, ffplay, recording, latency |
+| `moq-subghz-wire` | the format: framing, FEC, Annex-B splitter, barcode, encryption |
+| `moq-subghz-pi` | the Pi's radio HAT glue (SPI + GPIO), shared by sender and receiver |
+| `moq-subghz-report` | turns run logs into the results table |
 | `firmware/catwan-fw` | Rust firmware for the USB stick, plus a prebuilt `.uf2` |
 | `vendor/sx1276` | `no_std` SX1276 radio driver |
 | `scripts/` | the bench harness that produced the results |

@@ -3,11 +3,11 @@
 #
 #   PORT   CatWAN serial device. Linux: /dev/ttyACM0. macOS: /dev/cu.usbmodem*
 #   PI     ssh host of the Pi (an alias in ~/.ssh/config is convenient)
-#   PI_DIR directory on the Pi that holds moq-lora-send and moq-lora-recv
+#   PI_DIR directory on the Pi that holds moq-subghz-send and moq-subghz-recv
 #   LKEY   key path on the laptop (bench.sh). PKEY is the same file's path on the Pi.
 : "${PORT:=/dev/ttyACM0}"
 : "${PI:=pi}"
-: "${PI_DIR:=moq-lora}"
+: "${PI_DIR:=moq-subghz}"
 : "${BIN:=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/target/release}"
 : "${RUNS:=$(pwd)/runs}"
 mkdir -p "$RUNS"

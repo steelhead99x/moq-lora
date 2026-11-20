@@ -16,7 +16,7 @@ before the Pi transmits, the reverse path waits 4 s before the laptop transmits)
 ```sh
 export PORT=/dev/ttyACM0          # or /dev/cu.usbmodem* on macOS
 export PI=pi                      # ssh host
-export LKEY=$HOME/moq-lora-key.hex
+export LKEY=$HOME/moq-subghz-key.hex
 export PKEY=$LKEY                 # path of that same file on the Pi
 scripts/run2.sh  NAME 300000:100000:6 330 --fec-k 8
 scripts/rev.sh   NAME 300000:100000:12 330 --fec-k 8
