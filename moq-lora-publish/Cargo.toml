@@ -6,7 +6,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 # moq.dev's crates need 1.91; the radio workspace stays on 1.90.
 rust-version = "1.91"
-repository = "https://github.com/steelhead99x/moq-lora"
+repository = "https://github.com/steelhead99x/moq-subghz"
 publish = false
 
 [dependencies]

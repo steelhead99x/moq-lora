@@ -30,8 +30,12 @@ Pi 2  ──▶  915 MHz FSK radio  ──▶  CatWAN USB stick  ──▶  lapt
 The video framing follows the Media over QUIC model from **[moq.dev](https://moq.dev)**, the open
 source MoQ project and its Rust libraries. If you want to build real MoQ streaming over the
 internet, start there. moq-subghz borrows the model (groups and objects) and runs its own small Rust
-version on a radio instead of QUIC. It does not use moq.dev's code, and it is not affiliated with
-or endorsed by moq.dev.
+version on a radio instead of QUIC. The radio side does not use moq.dev's code. The optional
+republish step does use moq.dev's Rust libraries. This project is not affiliated with or endorsed
+by moq.dev.
+
+Want viewers on the internet? `moq-lora-recv --publish` republishes the stream to a moq.dev relay
+or moq.pro; see [docs/MOQ.md](docs/MOQ.md).
 
 ## Try it (no radio needed)
 
