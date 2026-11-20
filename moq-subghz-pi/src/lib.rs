@@ -1,4 +1,4 @@
-//! Pi glue shared by `moq-lora-send` and `moq-lora-recv`: the Dragino HAT's SX1276
+//! Pi glue shared by `moq-subghz-send` and `moq-subghz-recv`: the Dragino HAT's SX1276
 //! over spidev and GPIO cdev, in FSK mode. Linux only; empty elsewhere.
 #![cfg(target_os = "linux")]
 
@@ -83,14 +83,14 @@ pub fn open_hat(spi_hz: u32, freq_hz: u32, cfg: &FskConfig, power: i8) -> Result
     let mut chip = Chip::new("/dev/gpiochip0")?;
     let nss = chip
         .get_line(25)?
-        .request(LineRequestFlags::OUTPUT, 1, "moq-lora")?;
+        .request(LineRequestFlags::OUTPUT, 1, "moq-subghz")?;
     let rst = chip
         .get_line(17)?
-        .request(LineRequestFlags::OUTPUT, 1, "moq-lora")?;
+        .request(LineRequestFlags::OUTPUT, 1, "moq-subghz")?;
     let ev = chip.get_line(4)?.events(
         LineRequestFlags::INPUT,
         EventRequestFlags::RISING_EDGE,
-        "moq-lora",
+        "moq-subghz",
     )?;
     let spi = ExclusiveDevice::new(bus, CdevPin::new(nss)?, Delay)
         .map_err(|x| anyhow::anyhow!("NSS: {x}"))?;

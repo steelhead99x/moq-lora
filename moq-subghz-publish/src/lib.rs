@@ -1,11 +1,11 @@
-//! Republish what `moq-lora-recv` delivers as a real MoQ broadcast, using moq.dev's crates.
+//! Republish what `moq-subghz-recv` delivers as a real MoQ broadcast, using moq.dev's crates.
 //!
-//! moq-lora already sends video the MoQ way over the radio: one group per GOP, one object
+//! moq-subghz already sends video the MoQ way over the radio: one group per GOP, one object
 //! per frame. This maps that 1:1 onto a [hang] broadcast, so any moq.dev relay (a local
 //! `moq-relay`, or the moq.pro CDN) can fan it out and the moq.dev web player can watch it.
 //!
-//! - moq-lora group `g` becomes MoQ group `g` (unwrapped past 65535) on the `video` track.
-//! - moq-lora object `o` becomes frame `o` of that group, in order.
+//! - moq-subghz group `g` becomes MoQ group `g` (unwrapped past 65535) on the `video` track.
+//! - moq-subghz object `o` becomes frame `o` of that group, in order.
 //! - A gap inside a group closes the MoQ group early and drops the rest of it, the same
 //!   rule `GroupGate` applies before the decoder. The next group starts clean.
 //! - The catalog (`catalog.json`) is written once the first keyframe brings an SPS.
@@ -14,8 +14,8 @@ use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use hang::catalog::{Catalog, VideoConfig, H264, PRIORITY};
 use hang::container::{Frame, TIMESCALE};
-use moq_lora_wire::objstream::Record;
 use moq_net::Timestamp;
+use moq_subghz_wire::objstream::Record;
 
 /// Track names the moq.dev player looks for.
 pub const VIDEO_TRACK: &str = "video";
@@ -52,7 +52,7 @@ struct Open {
 
 /// H.264 profile, constraint flags and level from the first SPS in an Annex-B access unit.
 pub fn sps_profile(au: &[u8]) -> Option<H264> {
-    let nals = moq_lora_wire::annexb::nals(au);
+    let nals = moq_subghz_wire::annexb::nals(au);
     let &(start, _) = nals.iter().find(|&&(_, t)| t == 7)?;
     // Skip the start code (3 or 4 bytes) to the NAL header byte.
     let hdr = start
@@ -86,14 +86,14 @@ pub fn catalog(codec: H264, size: Option<(u32, u32)>) -> Result<Catalog> {
     Ok(catalog)
 }
 
-/// One moq-lora stream published as a hang broadcast.
+/// One moq-subghz stream published as a hang broadcast.
 pub struct Publisher {
     broadcast: moq_net::broadcast::Producer,
     catalog: moq_net::track::Producer,
     video: moq_net::track::Producer,
     size: Option<(u32, u32)>,
     have_catalog: bool,
-    /// Last moq-lora group seen and its unwrapped MoQ sequence.
+    /// Last moq-subghz group seen and its unwrapped MoQ sequence.
     last: Option<(u16, u64)>,
     open: Option<Open>,
     /// Capture time of the first published frame; frame timestamps count from it.

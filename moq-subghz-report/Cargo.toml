@@ -1,7 +1,7 @@
 [package]
-name = "moq-lora-report"
+name = "moq-subghz-report"
 version = "0.1.0"
-description = "Turn moq-lora run directories into a markdown results table"
+description = "Turn moq-subghz run directories into a markdown results table"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true

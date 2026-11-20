@@ -2,20 +2,27 @@
 
 ## Unreleased
 
-### Renamed
-
-* The project is now called moq-subghz (it was moq-lora), and the repository moved to
-  `steelhead99x/moq-subghz`. The old address redirects. Crate, binary, and key file names are
-  unchanged for now.
-
 Changes since the runs in `results/video/` were measured (2026-11-17). None of these has been
 run on the radios yet, only through the no-radio loopback and the unit tests.
+
+### Renamed
+
+* **The project is now moq-subghz** (it was moq-lora), and the repository moved to
+  `steelhead99x/moq-subghz`. The old address redirects. The video never went over LoRa
+  modulation, and the framing isn't tied to one radio chip.
+* The crates and tools follow: `moq-subghz-send`, `moq-subghz-recv`, `moq-subghz-wire`,
+  `moq-subghz-pi`, `moq-subghz-report` and `moq-subghz-publish`. The default key file is
+  `moq-subghz-key.hex`, and the publisher reads `MOQ_SUBGHZ_RELAY`.
 
 ### Changed on the air
 
 * **Frame format version 4.** Encrypted objects now carry a per-run salt, and each run encrypts
   under its own subkey derived from the pre-shared key. The first frame of each GOP carries 28
   bytes of overhead and the rest 20. Version 3 and version 4 tools refuse each other's frames.
+* The key-derivation label was renamed with the project, so encrypted version 4 output from before
+  the rename can't be opened, and a sender and receiver built on either side of the rename
+  can't read each other's encrypted frames (they show up as `auth_fail`). No such output was
+  published. Rebuild both ends together.
 
 ### Receiver
 
@@ -29,11 +36,11 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 
 ### Republish to MoQ
 
-* New `moq-lora-publish` crate: republishes the received groups and objects 1:1 as a real MoQ
+* New `moq-subghz-publish` crate: republishes the received groups and objects 1:1 as a real MoQ
   broadcast (hang format) through moq.dev's `moq-net`, `moq-tokio` and `hang` crates, so a
   moq.dev relay or moq.pro can fan it out and the moq.dev web player can show it. Separate
   crate (Rust 1.91+), so the Pi binaries are unchanged. See [docs/MOQ.md](docs/MOQ.md).
-* `moq-lora-recv --publish URL` feeds it the objects that pass the group gate.
+* `moq-subghz-recv --publish URL` feeds it the objects that pass the group gate.
   `summary.json` gains `publish_dropped_objects`.
 
 ### Sender and tools
@@ -42,7 +49,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   its video source stalls.
 * Key files must be readable only by their owner.
 * The bench scripts quote key paths and pass the receiver's key separately.
-* The Pi radio setup code is shared by the sender and receiver in a new `moq-lora-pi` crate.
+* The Pi radio setup code is shared by the sender and receiver in a new `moq-subghz-pi` crate.
 
 ### Docs
 

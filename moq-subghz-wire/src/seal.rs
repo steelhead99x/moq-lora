@@ -29,7 +29,7 @@ pub const OVERHEAD: usize = PREFIX_LEN + TAG_LEN;
 /// What sealing adds to object 0 of a group, which carries the whole salt.
 pub const OVERHEAD_FIRST: usize = SALT_LEN + TAG_LEN;
 /// HKDF info label, so these subkeys are never confused with any other use of the key.
-const INFO: &[u8] = b"moq-lora object key v1";
+const INFO: &[u8] = b"moq-subghz object key v1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cipher {
@@ -441,7 +441,7 @@ mod tests {
     #[test]
     fn key_file_mode_and_roundtrip() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("moq-lora-key-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("moq-subghz-key-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir(&dir).unwrap();
         let loose = dir.join("loose.hex");

@@ -1,14 +1,14 @@
-//! End to end over a real MoQ session: the `moq-lora-publish` binary dials a local
+//! End to end over a real MoQ session: the `moq-subghz-publish` binary dials a local
 //! moq-tokio server that relays between sessions (a stand-in for moq-relay), and a second
 //! session subscribes and checks every group and frame.
 //!
 //! `replay_through_recv` (ignored by default) runs the whole path from radio frames:
-//! `moq-lora-recv --replay --publish`. See docs/MOQ.md.
+//! `moq-subghz-recv --replay --publish`. See docs/MOQ.md.
 
 use hang::catalog::Catalog;
 use hang::container::Frame;
-use moq_lora_publish::{test_au, VIDEO_TRACK};
-use moq_lora_wire::objstream::Record;
+use moq_subghz_publish::{test_au, VIDEO_TRACK};
+use moq_subghz_wire::objstream::Record;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -22,10 +22,10 @@ struct Relay {
 }
 
 /// Every session publishes into and subscribes from one shared origin.
-/// MOQ_LORA_TEST_RELAY=http://localhost:4443/anon uses a running moq-relay instead.
+/// MOQ_SUBGHZ_TEST_RELAY=http://localhost:4443/anon uses a running moq-relay instead.
 async fn relay() -> Relay {
     let _ = moq_tokio::crypto::install_default();
-    if let Ok(url) = std::env::var("MOQ_LORA_TEST_RELAY") {
+    if let Ok(url) = std::env::var("MOQ_SUBGHZ_TEST_RELAY") {
         return Relay {
             url: url.parse().unwrap(),
             fingerprint: String::new(),
@@ -157,7 +157,7 @@ fn records() -> Vec<Record> {
 async fn publish_binary_through_a_relay() {
     let relay = relay().await;
     let recs = records();
-    let dir = std::env::temp_dir().join(format!("moq-lora-publish-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("moq-subghz-publish-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let input = dir.join("objects.bin");
     std::fs::write(
@@ -166,7 +166,7 @@ async fn publish_binary_through_a_relay() {
     )
     .unwrap();
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_moq-lora-publish"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_moq-subghz-publish"));
     cmd.args([
         "--url",
         relay.url.as_str(),
@@ -195,7 +195,7 @@ async fn publish_binary_through_a_relay() {
     assert_eq!(
         groups.iter().map(|g| g.0).collect::<Vec<_>>(),
         [0, 1, 2, 3],
-        "moq-lora group g is MoQ group g"
+        "moq-subghz group g is MoQ group g"
     );
     for (seq, frames) in &groups {
         let want: Vec<&Record> = recs
@@ -210,31 +210,33 @@ async fn publish_binary_through_a_relay() {
     }
 }
 
-/// The full radio-side path: `R` lines from `moq-lora-send --loopback` replayed by
-/// `moq-lora-recv --publish`, which spawns this crate's binary. Checks that the frames a
+/// The full radio-side path: `R` lines from `moq-subghz-send --loopback` replayed by
+/// `moq-subghz-recv --publish`, which spawns this crate's binary. Checks that the frames a
 /// viewer gets are byte for byte the access units recv recorded in rec.h264.
 ///
-/// MOQ_LORA_RECV=path/to/moq-lora-recv MOQ_LORA_REPLAY=loop.txt \
+/// MOQ_SUBGHZ_RECV=path/to/moq-subghz-recv MOQ_SUBGHZ_REPLAY=loop.txt \
 ///   cargo test --test relay -- --ignored
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "needs a moq-lora-recv binary and a loopback capture"]
+#[ignore = "needs a moq-subghz-recv binary and a loopback capture"]
 async fn replay_through_recv() {
-    let recv = std::env::var("MOQ_LORA_RECV").expect("MOQ_LORA_RECV");
-    let replay = std::env::var("MOQ_LORA_REPLAY").expect("MOQ_LORA_REPLAY");
-    let groups: usize = std::env::var("MOQ_LORA_GROUPS")
+    let recv = std::env::var("MOQ_SUBGHZ_RECV").expect("MOQ_SUBGHZ_RECV");
+    let replay = std::env::var("MOQ_SUBGHZ_REPLAY").expect("MOQ_SUBGHZ_REPLAY");
+    let groups: usize = std::env::var("MOQ_SUBGHZ_GROUPS")
         .ok()
         .and_then(|g| g.parse().ok())
         .unwrap_or(3);
     let relay = relay().await;
-    let out = std::env::temp_dir().join(format!("moq-lora-recv-{}", std::process::id()));
+    let out = std::env::temp_dir().join(format!("moq-subghz-recv-{}", std::process::id()));
     let child = Command::new(recv)
         .args(["--replay", &replay, "--paced", "--secs", "30", "--publish"])
         .arg(relay.url.as_str())
         .args(["--publish-name", "lora/replay", "--publish-bin"])
-        .arg(env!("CARGO_BIN_EXE_moq-lora-publish"))
+        .arg(env!("CARGO_BIN_EXE_moq-subghz-publish"))
         .arg("--out")
         .arg(&out)
-        .envs(Some(("MOQ_LORA_TLS_FINGERPRINT", &relay.fingerprint)).filter(|(_, f)| !f.is_empty()))
+        .envs(
+            Some(("MOQ_SUBGHZ_TLS_FINGERPRINT", &relay.fingerprint)).filter(|(_, f)| !f.is_empty()),
+        )
         .stdout(Stdio::null())
         .spawn()
         .unwrap();

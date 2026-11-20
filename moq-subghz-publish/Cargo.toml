@@ -1,7 +1,7 @@
 [package]
-name = "moq-lora-publish"
+name = "moq-subghz-publish"
 version = "0.1.0"
-description = "Laptop side: republish the objects moq-lora-recv recovers as a real MoQ broadcast on a moq.dev relay or moq.pro"
+description = "Laptop side: republish the objects moq-subghz-recv recovers as a real MoQ broadcast on a moq.dev relay or moq.pro"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 # moq.dev's crates need 1.91; the radio workspace stays on 1.90.
@@ -10,7 +10,7 @@ repository = "https://github.com/steelhead99x/moq-subghz"
 publish = false
 
 [dependencies]
-moq-lora-wire = { path = "../moq-lora-wire" }
+moq-subghz-wire = { path = "../moq-subghz-wire" }
 anyhow = "1"
 bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }

@@ -1,5 +1,5 @@
-//! Object records: how `moq-lora-recv` hands the objects it delivers to another process,
-//! such as `moq-lora-publish`, over a pipe.
+//! Object records: how `moq-subghz-recv` hands the objects it delivers to another process,
+//! such as `moq-subghz-publish`, over a pipe.
 //!
 //! One record per delivered object, in delivery order:
 //!
@@ -20,7 +20,7 @@ pub const RECORD_HDR_LEN: usize = 23;
 /// One delivered object.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Record {
-    /// moq-lora group id (one per GOP); wraps at 65536.
+    /// moq-subghz group id (one per GOP); wraps at 65536.
     pub group: u16,
     /// Object id inside the group (one per frame); object 0 is the keyframe.
     pub obj: u8,

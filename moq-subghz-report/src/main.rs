@@ -1,4 +1,4 @@
-//! moq-lora-report DIR...  ->  markdown table on stdout (one row per run directory).
+//! moq-subghz-report DIR...  ->  markdown table on stdout (one row per run directory).
 //!
 //! Each DIR holds what a run left behind: `summary.json` (receiver), `send_summary.json`
 //! (sender's last line), `decoded.jsonl[.gz]` and `objects.jsonl[.gz]`. Decoded-frame

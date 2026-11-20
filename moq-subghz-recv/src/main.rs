@@ -1,8 +1,8 @@
-//! moq-lora-recv: CatWAN USB serial (`R <t> <rssi> <snr> <hex>` lines from the sx1276-rs
+//! moq-subghz-recv: CatWAN USB serial (`R <t> <rssi> <snr> <hex>` lines from the sx1276-rs
 //! catwan-fw) -> reassembly + XOR FEC -> MoQ group gate -> H.264 Annex-B to
 //! (a) ffplay for live display, (b) a recording, (c) an ffmpeg decoder whose output
 //! frames are scanned for the burned-in barcode = capture->decoded latency, and
-//! (d) optionally `moq-lora-publish`, which republishes the objects as real MoQ.
+//! (d) optionally `moq-subghz-publish`, which republishes the objects as real MoQ.
 #[cfg(target_os = "linux")]
 mod radio;
 
@@ -10,7 +10,7 @@ use anyhow::{bail, Context, Result};
 
 static RADIO_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 use clap::Parser;
-use moq_lora_wire::{
+use moq_subghz_wire::{
     parse_fsk_profile, parse_r_line, read_line_limited, seal, stamp, Event, FrameRange, GroupGate,
     Line, ObjHdr, Reassembler, MAX_SERIAL_LINE,
 };
@@ -77,14 +77,14 @@ struct Args {
     #[arg(long, default_value_t = 250.0)]
     stall_ms: f64,
     /// Republish the delivered objects as a real MoQ broadcast on this relay URL, through
-    /// `moq-lora-publish` (see docs/MOQ.md). E.g. http://localhost:4443/anon
+    /// `moq-subghz-publish` (see docs/MOQ.md). E.g. http://localhost:4443/anon
     #[arg(long)]
     publish: Option<String>,
     /// Broadcast name for --publish
-    #[arg(long, default_value = "moq-lora")]
+    #[arg(long, default_value = "moq-subghz")]
     publish_name: String,
-    /// The moq-lora-publish binary for --publish
-    #[arg(long, default_value = "moq-lora-publish")]
+    /// The moq-subghz-publish binary for --publish
+    #[arg(long, default_value = "moq-subghz-publish")]
     publish_bin: String,
 }
 
@@ -196,7 +196,7 @@ const AUD: [u8; 6] = [0, 0, 0, 1, 0x09, 0xf0];
 /// next start of frame, so this lets it decode each frame on arrival instead of one frame
 /// (66 ms at 15 fps) later.
 fn live_bytes(au: &[u8]) -> Vec<u8> {
-    let n = moq_lora_wire::annexb::nals(au);
+    let n = moq_subghz_wire::annexb::nals(au);
     let body = match n.as_slice() {
         [(0, 9), (next, _), ..] => &au[*next..],
         [(0, 9)] => &[][..],
@@ -493,7 +493,7 @@ fn main() -> Result<()> {
                 "-sync",
                 "ext",
                 "-window_title",
-                "SX1276 FSK live video (moq-lora)",
+                "SX1276 FSK live video (moq-subghz)",
                 "-x",
                 "640",
                 "-y",
@@ -667,7 +667,7 @@ fn main() -> Result<()> {
                         s.send(&live);
                     }
                     if let Some(s) = &publish {
-                        let r = moq_lora_wire::objstream::Record {
+                        let r = moq_subghz_wire::objstream::Record {
                             group,
                             obj,
                             key: oh.key,

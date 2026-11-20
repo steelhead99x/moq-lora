@@ -1,9 +1,9 @@
-//! moq-lora-publish: read the object records `moq-lora-recv --publish` writes on stdin and
+//! moq-subghz-publish: read the object records `moq-subghz-recv --publish` writes on stdin and
 //! publish them as a MoQ broadcast on a moq.dev relay or the moq.pro CDN.
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use moq_lora_publish::{Publisher, Push};
-use moq_lora_wire::objstream::{read_record, Record};
+use moq_subghz_publish::{Publisher, Push};
+use moq_subghz_wire::objstream::{read_record, Record};
 use std::io::BufReader;
 use std::time::Duration;
 
@@ -12,16 +12,16 @@ use std::time::Duration;
 struct Args {
     /// Relay URL. Local moq.dev relay: http://localhost:4443/anon.
     /// moq.pro: the URL and ?jwt= token from your project's dashboard.
-    #[arg(long, env = "MOQ_LORA_RELAY")]
+    #[arg(long, env = "MOQ_SUBGHZ_RELAY")]
     url: url::Url,
     /// Broadcast name (the path viewers subscribe to)
-    #[arg(long, default_value = "moq-lora")]
+    #[arg(long, default_value = "moq-subghz")]
     name: String,
     /// Coded picture size for the catalog, WxH (must match the sender's --size)
     #[arg(long, default_value = "320x240")]
     size: String,
     /// Pin a self-signed relay certificate by its SHA-256 (hex) instead of the system roots
-    #[arg(long, env = "MOQ_LORA_TLS_FINGERPRINT")]
+    #[arg(long, env = "MOQ_SUBGHZ_TLS_FINGERPRINT")]
     tls_fingerprint: Option<String>,
     /// Read records from this file instead of stdin
     #[arg(long)]
@@ -78,7 +78,7 @@ async fn main() -> Result<()> {
         .context("moq client")?
         .with_publisher(&origin);
     let shown = moq_tokio::RedactedUrl::new(&a.url).to_string();
-    eprintln!("moq-lora-publish: {shown} broadcast={}", a.name);
+    eprintln!("moq-subghz-publish: {shown} broadcast={}", a.name);
     // Reconnects on its own; groups written while it is down are served once it is back.
     let connection = client.connect(a.url.clone());
 
@@ -88,7 +88,7 @@ async fn main() -> Result<()> {
                 let Some(rec) = rec else { break };
                 match publisher.push(&rec)? {
                     Push::Started { sequence } if publisher.stats.groups == 1 => {
-                        eprintln!("moq-lora-publish: first group {sequence} live");
+                        eprintln!("moq-subghz-publish: first group {sequence} live");
                     }
                     _ => {}
                 }
@@ -106,7 +106,7 @@ async fn main() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(200)).await;
     let s = publisher.stats;
     eprintln!(
-        "moq-lora-publish: groups={} frames={} groups_cut={} skipped={}",
+        "moq-subghz-publish: groups={} frames={} groups_cut={} skipped={}",
         s.groups, s.frames, s.groups_cut, s.skipped
     );
     match reader.join() {
