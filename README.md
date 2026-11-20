@@ -130,6 +130,7 @@ Details in the [HOWTO](HOWTO.md#9-radio-rules).
 | `firmware/catwan-fw` | Rust firmware for the USB stick, plus a prebuilt `.uf2` |
 | `vendor/sx1276` | `no_std` SX1276 radio driver |
 | `scripts/` | the bench harness that produced the results |
+| `demo/oldstack/` | no-radio bench against the usual LoRaWAN path (gateway, network server, MQTT, Python app) |
 | `results/video/` | raw logs from every run |
 
 ## Write-ups

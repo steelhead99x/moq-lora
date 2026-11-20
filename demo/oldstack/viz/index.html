@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Old stack vs moq-lora: frame by frame</title>
+<style>
+:root{--bg:#fff;--fg:#1d2330;--mut:#5b6475;--card:#f3f5f9;--line:#cfd5e0;--old:#d9822b;--moq:#1b9aaa;--ok:#2e9b57;--bad:#c8402f;--warn:#d9a21b;--pend:#dfe3ea}
+@media (prefers-color-scheme: dark){:root{--bg:#10141c;--fg:#e8ecf4;--mut:#9aa5ba;--card:#1a2130;--line:#34405a;--old:#f0a04b;--moq:#43c3d2;--ok:#5fcf86;--bad:#ef6f5e;--warn:#e0b84a;--pend:#2a3242}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 -apple-system,"Segoe UI",Helvetica,Arial,sans-serif}
+main{max-width:1120px;margin:0 auto;padding:22px 20px 40px}
+h1{font-size:26px;margin:0 0 4px}
+.sub{color:var(--mut);margin:0 0 12px}
+.banner{border:1.5px solid var(--warn);border-radius:10px;padding:8px 12px;margin:0 0 14px;font-size:13px}
+.banner b{color:var(--warn)}
+.ctl{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:14px}
+.ctl label{font-size:13px;color:var(--mut)}
+.ctl select,.ctl button,.ctl input[type=range]{font:inherit;font-size:14px}
+.ctl button,.ctl select{background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:5px 10px;cursor:pointer}
+.ctl button:focus-visible,.ctl select:focus-visible,.ctl input:focus-visible{outline:2px solid var(--moq);outline-offset:2px}
+.lossval{font-weight:700;min-width:3.4em;display:inline-block}
+.lane{border:2px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:14px;background:var(--card)}
+.lane.old{border-color:var(--old)}.lane.moq{border-color:var(--moq)}
+.lane h2{font-size:17px;margin:0 0 2px}
+.lane.old h2{color:var(--old)}.lane.moq h2{color:var(--moq)}
+.note{font-size:12px;color:var(--mut)}
+.lanes{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:start}
+@media (max-width:900px){.lanes{grid-template-columns:1fr}}
+.lane{margin-bottom:0}
+canvas{width:100%;height:84px;display:block}
+.row{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start}
+.grid{display:grid;grid-template-columns:repeat(15,15px);gap:3px;flex:0 0 auto}
+.stats{flex:1 1 150px!important;min-width:150px!important}
+.c{width:15px;height:15px;border-radius:3px;background:var(--pend)}
+.c.k{outline:1.5px solid var(--mut);outline-offset:-1.5px}
+.c.ok{background:var(--ok)}.c.bad{background:var(--bad)}.c.warn{background:var(--warn)}
+.stats{flex:1 1 320px;min-width:260px}
+.big{font-size:30px;font-weight:800;line-height:1.1}
+.stats .big small{font-size:13px;font-weight:600;color:var(--mut)}
+.k2{display:grid;grid-template-columns:1fr;gap:0;font-size:13px;margin-top:8px}
+.k2 span:nth-child(odd){color:var(--mut);margin-top:6px;font-size:12px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mut);margin:0 0 12px}
+.legend i{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-2px;margin-right:5px}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin:16px 0}
+.fact{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--card)}
+.fact b{display:block;font-size:13px;color:var(--mut);font-weight:600}
+.fact .n{font-size:15px}
+.fact .o{color:var(--old);font-weight:700}.fact .m{color:var(--moq);font-weight:700}
+footer{font-size:12px;color:var(--mut);margin-top:14px}
+.sr{position:absolute;left:-9999px}
+</style>
+</head>
+<body>
+<main>
+<h1>Old stack vs moq-lora, frame by frame</h1>
+<p class="sub">20 seconds of video, 300 frames, sent through both paths. Watch which frames you could actually play.</p>
+<div class="banner"><b>Simulation.</b> This page replays or models the benchmark in <code>demo/oldstack</code>. The radio in that benchmark is simulated on one computer, so this is not a range test and not a real radio. Travel in the pictures is drawn evenly and is not to scale.</div>
+
+<div class="ctl">
+  <label>Source
+    <select id="mode" aria-label="Source of the frame outcomes">
+      <option value="r0">Replay: measured run, no loss</option>
+      <option value="r0.01" selected>Replay: measured run, 1% loss</option>
+      <option value="sim">Model: set the loss yourself</option>
+    </select>
+  </label>
+  <label id="lossbox">Radio loss <input type="range" id="loss" min="0" max="0.05" step="0.0025" value="0.01" aria-label="Radio loss per frame"> <span class="lossval" id="lossv">1%</span></label>
+  <button id="redraw" type="button" title="Draw different random losses">New random losses</button>
+  <label>Speed
+    <select id="speed" aria-label="Playback speed"><option value="1">1x (15 frames/s)</option><option value="4" selected>4x</option><option value="12">12x</option></select>
+  </label>
+  <button id="play" type="button">Pause</button>
+  <button id="restart" type="button">Restart</button>
+</div>
+
+<div class="legend" aria-hidden="true">
+  <span><i style="background:var(--ok)"></i>playable</span>
+  <span><i style="background:var(--warn)"></i>arrived, but its group is broken, so it cannot be shown</span>
+  <span><i style="background:var(--bad)"></i>never arrived</span>
+  <span><i style="background:var(--pend);outline:1.5px solid var(--mut);outline-offset:-1.5px"></i>outlined = keyframe (starts a group)</span>
+  <span>one row = one second = one group of 15 frames</span>
+</div>
+
+<div class="lanes">
+<section class="lane old" aria-labelledby="oh">
+  <h2 id="oh">Old stack (LoRaWAN style, Python)</h2>
+  <div class="note">Each frame is cut into about 7 uplinks. If any one is lost, the frame is lost. Nothing repairs it.</div>
+  <canvas id="cold" role="img" aria-label="Frames travelling through device, radio, gateway, network server, broker and app"></canvas>
+  <div class="row">
+    <div class="grid" id="gold" aria-hidden="true"></div>
+    <div class="stats">
+      <div class="big"><span id="pold">0</span>% <small>playable</small></div>
+      <div class="k2">
+        <span>arrived</span><span id="aold">0 of 0</span>
+        <span>delay, measured p50</span><span id="dold"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="lane moq" aria-labelledby="mh">
+  <h2 id="mh">moq-lora</h2>
+  <div class="note">Each frame is about 8 radio frames plus repair frames: one repair per 8. One lost radio frame in a block is rebuilt.</div>
+  <canvas id="cmoq" role="img" aria-label="Frames travelling through Pi, radio, stick and laptop"></canvas>
+  <div class="row">
+    <div class="grid" id="gmoq" aria-hidden="true"></div>
+    <div class="stats">
+      <div class="big"><span id="pmoq">0</span>% <small>playable</small></div>
+      <div class="k2">
+        <span>arrived</span><span id="amoq">0 of 0</span>
+        <span>delay, measured p50</span><span id="dmoq"></span>
+      </div>
+    </div>
+  </div>
+</section>
+</div>
+
+<div class="note" id="avg" aria-live="polite"></div>
+
+<div class="facts" id="facts"></div>
+
+<footer>
+Measured on <span id="date"></span>, one machine, simulated radio. Replay uses the real per-frame results of those runs. The model uses the same loss rule per radio frame (old stack: any lost uplink loses the frame; moq-lora: one repair frame per 8 rebuilds one loss in a block) and the frame counts of the demo's video; it is a simulation, not another benchmark.
+"Playable" is the demo's GOP rule: a lost frame spoils the rest of its group. A single measured run is one random draw, so it can sit away from the average. LoRaWAN is the better fit for small sensor readings and for range; see the README next to this page.
+The MoQ model, from moq.dev. Source: <code>demo/oldstack</code>. Numbers come from <code>results/results.json</code>.
+</footer>
+</main>
+<script>
+"use strict";
+const DATA = {"replay":{"n":300,"fps":15,"key":[1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"runs":{"0.0":{"old":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128,129,130,131,132,133,134,135,136,137,138,139,140,141,142,143,144,145,146,147,148,149,150,151,152,153,154,155,156,157,158,159,160,161,162,163,164,165,166,167,168,169,170,171,172,173,174,175,176,177,178,179,180,181,182,183,184,185,186,187,188,189,190,191,192,193,194,195,196,197,198,199,200,201,202,203,204,205,206,207,208,209,210,211,212,213,214,215,216,217,218,219,220,221,222,223,224,225,226,227,228,229,230,231,232,233,234,235,236,237,238,239,240,241,242,243,244,245,246,247,248,249,250,251,252,253,254,255,256,257,258,259,260,261,262,263,264,265,266,267,268,269,270,271,272,273,274,275,276,277,278,279,280,281,282,283,284,285,286,287,288,289,290,291,292,293,294,295,296,297,298,299],"moq":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128,129,130,131,132,133,134,135,136,137,138,139,140,141,142,143,144,145,146,147,148,149,150,151,152,153,154,155,156,157,158,159,160,161,162,163,164,165,166,167,168,169,170,171,172,173,174,175,176,177,178,179,180,181,182,183,184,185,186,187,188,189,190,191,192,193,194,195,196,197,198,199,200,201,202,203,204,205,206,207,208,209,210,211,212,213,214,215,216,217,218,219,220,221,222,223,224,225,226,227,228,229,230,231,232,233,234,235,236,237,238,239,240,241,242,243,244,245,246,247,248,249,250,251,252,253,254,255,256,257,258,259,260,261,262,263,264,265,266,267,268,269,270,271,272,273,274,275,276,277,278,279,280,281,282,283,284,285,286,287,288,289,290,291,292,293,294,295,296,297,298,299]},"0.01":{"old":[0,1,2,3,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,76,77,78,79,80,81,82,83,84,85,86,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128,129,130,131,132,133,134,136,137,138,139,140,141,142,143,144,147,149,150,151,152,153,154,155,156,157,158,159,160,161,162,163,164,165,166,167,168,169,170,171,172,173,174,175,176,177,178,179,180,181,182,183,184,185,186,187,188,189,190,191,192,193,194,195,196,197,198,199,200,201,202,203,204,205,206,207,208,209,210,211,212,213,214,215,216,217,218,219,220,221,222,223,224,225,226,227,228,229,230,231,232,233,234,235,236,237,238,239,240,241,242,243,244,245,246,248,249,250,251,254,255,256,257,259,260,261,262,263,264,265,266,267,268,269,270,271,272,273,274,275,277,278,279,281,282,283,284,285,286,287,288,289,290,291,292,293,294,295,296,297,298,299],"moq":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128,129,130,131,132,133,134,135,136,137,138,139,140,141,142,143,144,145,146,147,148,149,150,151,152,153,154,155,156,157,158,159,160,161,162,163,164,165,166,167,168,169,170,171,172,173,174,175,176,177,178,179,180,181,182,183,184,185,186,187,188,189,190,191,192,193,194,195,196,197,198,199,200,201,202,203,204,205,206,207,208,209,210,211,212,213,214,215,216,217,218,219,220,221,222,223,224,225,226,227,228,229,230,231,232,233,234,235,236,237,238,239,240,241,242,243,244,245,246,247,248,249,250,251,252,253,254,255,256,257,258,259,260,261,262,263,264,265,266,267,268,269,270,271,272,273,274,275,276,277,278,279,280,281,282,283,284,285,286,287,288,289,290,291,292,293,294,295,296,297,298,299]}},"frames_old":[16,6,7,5,6,6,6,5,6,4,6,6,5,6,5,18,6,6,6,7,7,6,7,5,5,6,7,6,6,5,23,5,6,6,7,6,5,6,7,7,5,6,6,6,6,21,8,5,7,7,6,8,6,6,5,6,6,7,4,7,18,6,6,6,5,5,5,7,6,6,5,5,8,5,5,18,7,5,7,7,7,6,5,6,6,7,6,6,6,6,24,6,6,5,6,6,6,6,5,4,6,6,5,6,6,25,5,6,6,6,5,6,5,6,5,7,5,5,7,6,23,5,4,6,5,6,6,5,6,6,8,6,6,4,5,21,6,6,5,6,7,4,7,6,6,6,6,6,5,6,19,6,7,6,6,5,6,6,5,6,5,4,7,6,3,22,8,6,6,5,6,7,6,6,6,5,6,7,7,6,24,5,8,4,6,6,5,5,5,6,4,8,6,7,7,18,5,5,5,6,6,6,5,6,5,7,7,7,7,5,17,5,5,7,7,6,7,6,6,5,6,6,7,5,5,20,6,6,5,5,6,7,5,6,7,6,5,6,6,6,17,6,7,6,8,6,5,6,5,6,5,6,6,8,6,17,7,6,7,7,4,5,6,6,6,5,5,6,6,5,19,6,5,6,5,7,5,6,5,6,6,6,7,5,7,21,5,5,6,6,5,5,7,7,6,5,7,6,5,4],"frames_moq":[16,6,7,5,6,6,7,6,6,4,6,6,6,6,5,18,6,6,6,7,7,6,7,5,5,6,7,6,6,5,22,5,6,6,7,6,5,6,7,7,6,6,6,6,6,21,8,5,7,7,6,8,6,6,5,6,6,7,4,7,18,6,6,6,5,5,5,7,6,6,5,5,8,5,5,18,7,5,7,7,7,6,5,6,6,7,6,6,6,6,23,6,6,5,6,6,6,6,5,4,6,6,5,6,6,24,5,6,6,6,5,6,5,6,5,7,6,5,7,6,23,5,5,6,5,6,6,5,6,6,8,6,6,4,5,21,6,6,5,6,7,4,7,6,6,6,6,6,5,6,19,6,7,6,6,5,6,6,6,6,5,4,7,6,3,22,8,6,6,5,6,7,6,6,6,5,6,7,7,6,23,5,8,4,6,6,5,5,5,6,5,8,6,7,7,17,6,5,5,6,6,6,5,6,5,7,7,7,7,5,17,5,5,7,7,6,7,7,6,5,6,6,7,5,5,20,6,6,5,5,6,7,5,6,7,6,5,6,7,6,17,6,7,6,8,6,5,7,5,6,5,6,6,8,6,17,7,6,7,7,4,5,6,6,6,5,5,6,6,5,19,6,5,6,5,7,5,6,5,6,6,6,7,5,7,20,6,5,6,6,6,6,7,7,6,5,7,7,5,4],"check":{"old_model_total":2045,"old_measured_total":2045,"moq_model_total":2394,"moq_measured_total":2395}},"date":"2026-11-19","video":{"loss":0.01,"old":{"delivered_pct":94.33333333333333,"decodable_pct":69.0},"moq":{"delivered_pct":99.66666666666667,"decodable_pct":96.0,"fec_recovered":17}},"lat_p50":{"old":43.7215,"moq":0.189846},"cmd":{"old_p50_ms":1936.629333,"moq_p50_ms":0.2749,"interval_s":2.0},"busy":{"old":1692.867284643364,"moq":79.20587062696019},"sensor_air":{"old":25.0,"moq":192.0}};
+const R = DATA.replay, N = R.n, FPS = R.fps, GOP = 15;
+const $ = id => document.getElementById(id);
+const q = new URLSearchParams(location.search);
+
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+
+// outcome: array of booleans, arrived[i]
+function modelOnce(loss, rnd){
+  const o=[],m=[];
+  for(let i=0;i<N;i++){
+    let ok=true;
+    for(let f=0;f<R.frames_old[i];f++) if(rnd()<loss) ok=false;
+    o.push(ok);
+    const nf=R.frames_moq[i]; let good=true;
+    for(let b=0;b<nf;b+=8){const blk=Math.min(8,nf-b)+1;let lost=0;for(let f=0;f<blk;f++) if(rnd()<loss) lost++; if(lost>1) good=false}
+    m.push(good);
+  }
+  return {old:o,moq:m};
+}
+function playable(arr){ // GOP rule
+  const p=[];let ok=false;
+  for(let i=0;i<N;i++){ok=R.key[i]?arr[i]:(ok&&arr[i]);p.push(ok)}
+  return p;
+}
+const pct=a=>100*a.filter(Boolean).length/a.length;
+
+let seed=+q.get("seed")||7, out, play;
+function pickOutcome(){
+  const m=$("mode").value;
+  if(m==="sim"){
+    out=modelOnce(+$("loss").value, mulberry32(seed));
+  }else{
+    const ent=R.runs[m.slice(1)];
+    const so=new Set(ent.old), sm=new Set(ent.moq);
+    out={old:[...Array(N).keys()].map(i=>so.has(i)),moq:[...Array(N).keys()].map(i=>sm.has(i))};
+  }
+  play={old:playable(out.old),moq:playable(out.moq)};
+  $("lossbox").style.display=m==="sim"?"":"none";
+  $("redraw").style.display=m==="sim"?"":"none";
+  const sp=document.getElementById("avg");
+  if(m==="sim"){
+    const loss=+$("loss").value, runs=200, rnd=mulberry32(12345);
+    let po=0,pm=0,ao=0,am=0;
+    for(let r=0;r<runs;r++){const x=modelOnce(loss,rnd);po+=pct(playable(x.old));pm+=pct(playable(x.moq));ao+=pct(x.old);am+=pct(x.moq)}
+    sp.textContent=`Model average over ${runs} random draws at ${(loss*100).toFixed(2).replace(/\.?0+$/,"")}% loss: playable ${(po/runs).toFixed(1)}% old stack, ${(pm/runs).toFixed(1)}% moq-lora (arrived ${(ao/runs).toFixed(1)}% and ${(am/runs).toFixed(1)}%). `+
+      `The measured single run at 1% loss: playable ${DATA.video.old.decodable_pct.toFixed(1)}% and ${DATA.video.moq.decodable_pct.toFixed(1)}%.`;
+  }else{
+    sp.textContent="Replay of the real per-frame results of the benchmark run. A single run is one random draw of the losses.";
+  }
+}
+
+// grids
+const cells={old:[],moq:[]};
+for(const k of ["old","moq"]){
+  const g=$("g"+k);g.textContent="";
+  for(let i=0;i<N;i++){const d=document.createElement("div");d.className="c"+(R.key[i]?" k":"");g.appendChild(d);cells[k].push(d)}
+}
+function paintCell(k,i){
+  const c=cells[k][i];
+  c.className="c"+(R.key[i]?" k":"")+(play[k][i]?" ok":(out[k][i]?" warn":" bad"));
+}
+
+// pipelines
+const NODES={old:["Device","Radio","Gateway","Net server","Broker","App"],moq:["Pi","Radio","CatWAN","Laptop"]};
+const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const TRAVEL=0.9; // seconds of animation per packet, same for both
+function drawLane(k,t){
+  const cv=$("c"+k),dpr=window.devicePixelRatio||1,W=cv.clientWidth,H=cv.clientHeight;
+  if(cv.width!==Math.round(W*dpr)){cv.width=Math.round(W*dpr);cv.height=Math.round(H*dpr)}
+  const ctx=cv.getContext("2d");ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,W,H);
+  const nodes=NODES[k],n=nodes.length,x0=36,x1=W-36,y=32;
+  const px=i=>x0+(x1-x0)*i/(n-1);
+  ctx.font="13px -apple-system,Segoe UI,Helvetica,Arial,sans-serif";ctx.textAlign="center";
+  ctx.strokeStyle=css("--line");ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x0,y);ctx.lineTo(x1,y);ctx.stroke();
+  const col=css(k==="old"?"--old":"--moq");
+  nodes.forEach((s,i)=>{
+    ctx.fillStyle=css("--card");ctx.strokeStyle=col;ctx.lineWidth=2;
+    ctx.beginPath();ctx.arc(px(i),y,9,0,7);ctx.fill();ctx.stroke();
+    ctx.fillStyle=css("--fg");ctx.fillText(s,px(i),y+28);
+  });
+  // packets in flight
+  const spawn=t, ok=css("--ok"), bad=css("--bad"), warn=css("--warn");
+  for(let i=Math.max(0,Math.floor((t-TRAVEL)*FPS));i<=Math.min(N-1,Math.floor(t*FPS));i++){
+    const a=t-i/FPS; if(a<0||a>TRAVEL) continue;
+    const f=a/TRAVEL;
+    const arrived=out[k][i];
+    // a lost frame stops at the radio hop (node 1 -> 2) and fades
+    const stop=1.4/(n-1);
+    const pos=arrived?f:Math.min(f,stop);
+    const x=x0+(x1-x0)*pos;
+    ctx.globalAlpha=arrived?1:(f>stop?Math.max(0,1-(f-stop)*6):1);
+    ctx.fillStyle=arrived?(R.key[i]?css("--fg"):col):bad;
+    ctx.beginPath();ctx.arc(x,y,R.key[i]?7:5,0,7);ctx.fill();
+    if(!arrived&&f>stop){ctx.strokeStyle=bad;ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(x-8,y-8);ctx.lineTo(x+8,y+8);ctx.moveTo(x+8,y-8);ctx.lineTo(x-8,y+8);ctx.stroke()}
+    ctx.globalAlpha=1;
+  }
+}
+
+let t=0,running=true,last=null,painted={old:0,moq:0};
+function reset(){t=0;painted={old:0,moq:0};for(const k of ["old","moq"]){cells[k].forEach((c,i)=>c.className="c"+(R.key[i]?" k":""))}updateStats(0)}
+function updateStats(done){
+  for(const k of ["old","moq"]){
+    const arr=out[k];let arrived=0,pl=0;
+    for(let i=0;i<done;i++){if(arr[i])arrived++;if(play[k][i])pl++}
+    $("p"+k).textContent=done?(100*pl/done).toFixed(0):"0";
+    $("a"+k).textContent=`${arrived} of ${done}`;
+  }
+}
+function frame(ts){
+  if(last===null) last=ts;
+  const dt=(ts-last)/1000;last=ts;
+  if(running){t+=dt*(+$("speed").value)}
+  const total=(N-1)/FPS+TRAVEL;
+  if(t>total){t=total;if(running&&!q.get("loop")){/* stay on the finished state */}}
+  const done=Math.min(N,Math.max(0,Math.floor((t-TRAVEL)*FPS)+1));
+  for(const k of ["old","moq"]){while(painted[k]<done){paintCell(k,painted[k]);painted[k]++}}
+  updateStats(done);
+  drawLane("old",t);drawLane("moq",t);
+  requestAnimationFrame(frame);
+}
+function start(){pickOutcome();reset();if(q.get("end")){t=(N-1)/FPS+TRAVEL}else if(q.get("t")){t=+q.get("t");running=false;$("play").textContent="Play"}}
+
+$("mode").addEventListener("change",start);
+$("loss").addEventListener("input",()=>{$("lossv").textContent=(+$("loss").value*100).toFixed(2).replace(/\.?0+$/,"")+"%";start()});
+$("redraw").addEventListener("click",()=>{seed=(seed*1103515245+12345)>>>0;start()});
+$("restart").addEventListener("click",()=>{reset();running=true;$("play").textContent="Pause"});
+$("play").addEventListener("click",()=>{running=!running;$("play").textContent=running?"Pause":"Play"});
+
+// static facts (all from the measured results)
+$("date").textContent=DATA.date;
+$("dold").textContent=DATA.lat_p50.old.toFixed(1)+" ms (video, localhost)";
+$("dmoq").textContent=DATA.lat_p50.moq.toFixed(2)+" ms (video, localhost)";
+const facts=[
+ ["Command round trip, p50", `<span class="o">${(DATA.cmd.old_p50_ms/1000).toFixed(2)} s</span> old (Class A, uplink every ${DATA.cmd.interval_s} s) vs <span class="m">${DATA.cmd.moq_p50_ms.toFixed(2)} ms</span> moq-lora. Measured.`],
+ ["Channel time for 20 s of video", `<span class="o">${Math.round(DATA.busy.old).toLocaleString("en-US")}%</span> of one LoRa DR4 channel vs <span class="m">${Math.round(DATA.busy.moq)}%</span> of the FSK link. Computed, not measured.`],
+ ["Where LoRaWAN wins", `A 12-byte sensor reading takes <span class="o">${DATA.sensor_air.old} bytes</span> on air in LoRaWAN and <span class="m">${DATA.sensor_air.moq} bytes</span> in moq-lora. LoRa also reaches much farther. Not tested here.`]
+];
+$("facts").innerHTML=facts.map(f=>`<div class="fact"><b>${f[0]}</b><span class="n">${f[1]}</span></div>`).join("");
+
+if(q.get("mode")) $("mode").value=q.get("mode");
+if(q.get("loss")){$("loss").value=q.get("loss");$("lossv").textContent=(+q.get("loss")*100).toFixed(2).replace(/\.?0+$/,"")+"%"}
+if(q.get("speed")) $("speed").value=q.get("speed");
+start();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

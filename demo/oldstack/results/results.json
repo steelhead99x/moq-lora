@@ -1,0 +1,739 @@
+{
+ "date": "2026-11-19",
+ "machine": {
+  "cpu": "Intel(R) Xeon(R) Processor",
+  "cores": 8,
+  "python": "3.13.5",
+  "mosquitto": "2.0.21"
+ },
+ "paced": [
+  {
+   "workload": "sensor",
+   "loss": 0.0,
+   "old": {
+    "payloads": 400,
+    "delivered": 400,
+    "wrong_bytes": 0,
+    "delivered_pct": 100.0,
+    "decodable_pct": 100.0,
+    "lat_ms": {
+     "p50": 1.072635,
+     "p95": 1.682063,
+     "p99": 2.441605,
+     "max": 2.831828
+    },
+    "payloads_per_s": 20.049249080700392,
+    "goodput_kbit_s": 1.9247279117472376,
+    "air_frames": 400,
+    "air_bytes": 10000,
+    "air_frames_dropped": 0,
+    "air_bytes_per_payload": 25.0,
+    "app_bytes_per_payload": 12.0,
+    "backhaul_bytes_per_payload": 651.185,
+    "cpu_ms_per_payload": 1.858105,
+    "cpu_s_by_process": {
+     "device": 0.139,
+     "app": 0.156,
+     "gateway": 0.155,
+     "netserver": 0.263,
+     "mosquitto": 0.031
+    },
+    "fec_recovered": null
+   },
+   "old_tx": {
+    "stack": "old",
+    "payloads": 400,
+    "fragmented": false,
+    "air_frames": 400,
+    "air_bytes": 10000,
+    "air_frames_dropped": 0,
+    "send_wall_s": 19.9503,
+    "backhaul_bytes": 260474,
+    "cpu_s": {
+     "device": 0.13888699999999998,
+     "app": 0.15560599999999997,
+     "gateway": 0.15455,
+     "netserver": 0.263343,
+     "mosquitto": 0.030855999999999998
+    }
+   },
+   "moq": {
+    "payloads": 400,
+    "delivered": 400,
+    "wrong_bytes": 0,
+    "delivered_pct": 100.0,
+    "decodable_pct": 100.0,
+    "lat_ms": {
+     "p50": 0.159694,
+     "p95": 0.227336,
+     "p99": 0.269706,
+     "max": 0.358038
+    },
+    "payloads_per_s": 20.049925734613932,
+    "goodput_kbit_s": 1.9247928705229373,
+    "air_frames": 800,
+    "air_bytes": 76800,
+    "air_frames_dropped": 0,
+    "air_bytes_per_payload": 192.0,
+    "app_bytes_per_payload": 12.0,
+    "backhaul_bytes_per_payload": 0.0,
+    "cpu_ms_per_payload": 0.10101249999999999,
+    "cpu_s_by_process": {
+     "tx": 0.018,
+     "rx": 0.022
+    },
+    "fec_recovered": 0
+   },
+   "moq_tx": {
+    "stack": "moq-lora",
+    "payloads": 400,
+    "air_frames": 800,
+    "air_bytes": 76800,
+    "air_frames_dropped": 0,
+    "send_wall_s": 19.9501,
+    "fec_k": 8,
+    "min_frame": 96,
+    "cipher": "chacha20poly1305",
+    "backhaul_bytes": 0,
+    "cpu_s": {
+     "tx": 0.018338999999999998,
+     "rx": 0.022066
+    },
+    "rx": {
+     "stack": "moq-lora",
+     "frames_rx": 800,
+     "delivered": 400,
+     "objects_lost": 0,
+     "auth_failures": 0,
+     "fec_recovered": 0
+    }
+   },
+   "model": {
+    "old": {
+     "frames": 400,
+     "airtime_ms_per_payload": 28.288,
+     "channel_busy_pct": 56.576,
+     "class_a_send_s": 811.3152,
+     "radio": "LoRa SF8/500 kHz CR4/5, 8-symbol preamble (US915 DR4)"
+    },
+    "workload_s": 20.0,
+    "moq": {
+     "frames": 800,
+     "airtime_ms_per_payload": 5.706666666666666,
+     "channel_busy_pct": 11.413333333333332,
+     "radio": "FSK 300 kbit/s, 6-byte preamble, 2-byte sync, CRC-16"
+    }
+   }
+  },
+  {
+   "workload": "sensor",
+   "loss": 0.01,
+   "old": {
+    "payloads": 400,
+    "delivered": 396,
+    "wrong_bytes": 0,
+    "delivered_pct": 99.0,
+    "decodable_pct": 70.25,
+    "lat_ms": {
+     "p50": 1.186801,
+     "p95": 1.608235,
+     "p99": 2.244363,
+     "max": 3.57796
+    },
+    "payloads_per_s": 19.84802177959397,
+    "goodput_kbit_s": 1.9054100908410212,
+    "air_frames": 400,
+    "air_bytes": 10000,
+    "air_frames_dropped": 4,
+    "air_bytes_per_payload": 25.0,
+    "app_bytes_per_payload": 12.0,
+    "backhaul_bytes_per_payload": 644.675,
+    "cpu_ms_per_payload": 1.9329343434343436,
+    "cpu_s_by_process": {
+     "device": 0.114,
+     "app": 0.144,
+     "gateway": 0.244,
+     "netserver": 0.234,
+     "mosquitto": 0.031
+    },
+    "fec_recovered": null
+   },
+   "old_tx": {
+    "stack": "old",
+    "payloads": 400,
+    "fragmented": false,
+    "air_frames": 400,
+    "air_bytes": 10000,
+    "air_frames_dropped": 4,
+    "send_wall_s": 19.9503,
+    "backhaul_bytes": 257870,
+    "cpu_s": {
+     "device": 0.113574,
+     "app": 0.14350999999999997,
+     "gateway": 0.243584,
+     "netserver": 0.23397399999999996,
+     "mosquitto": 0.0308
+    }
+   },
+   "moq": {
+    "payloads": 400,
+    "delivered": 400,
+    "wrong_bytes": 0,
+    "delivered_pct": 100.0,
+    "decodable_pct": 100.0,
+    "lat_ms": {
+     "p50": 0.157745,
+     "p95": 0.209916,
+     "p99": 0.248255,
+     "max": 0.274138
+    },
+    "payloads_per_s": 20.049875721978157,
+    "goodput_kbit_s": 1.924788069309903,
+    "air_frames": 800,
+    "air_bytes": 76800,
+    "air_frames_dropped": 8,
+    "air_bytes_per_payload": 192.0,
+    "app_bytes_per_payload": 12.0,
+    "backhaul_bytes_per_payload": 0.0,
+    "cpu_ms_per_payload": 0.10155999999999998,
+    "cpu_s_by_process": {
+     "tx": 0.017,
+     "rx": 0.024
+    },
+    "fec_recovered": 6
+   },
+   "moq_tx": {
+    "stack": "moq-lora",
+    "payloads": 400,
+    "air_frames": 800,
+    "air_bytes": 76800,
+    "air_frames_dropped": 8,
+    "send_wall_s": 19.9502,
+    "fec_k": 8,
+    "min_frame": 96,
+    "cipher": "chacha20poly1305",
+    "backhaul_bytes": 0,
+    "cpu_s": {
+     "tx": 0.016553,
+     "rx": 0.024071
+    },
+    "rx": {
+     "stack": "moq-lora",
+     "frames_rx": 792,
+     "delivered": 400,
+     "objects_lost": 0,
+     "auth_failures": 0,
+     "fec_recovered": 6
+    }
+   },
+   "model": {
+    "old": {
+     "frames": 400,
+     "airtime_ms_per_payload": 28.288,
+     "channel_busy_pct": 56.576,
+     "class_a_send_s": 811.3152,
+     "radio": "LoRa SF8/500 kHz CR4/5, 8-symbol preamble (US915 DR4)"
+    },
+    "workload_s": 20.0,
+    "moq": {
+     "frames": 800,
+     "airtime_ms_per_payload": 5.706666666666666,
+     "channel_busy_pct": 11.413333333333332,
+     "radio": "FSK 300 kbit/s, 6-byte preamble, 2-byte sync, CRC-16"
+    }
+   }
+  },
+  {
+   "workload": "video",
+   "loss": 0.0,
+   "old": {
+    "payloads": 300,
+    "delivered": 300,
+    "wrong_bytes": 0,
+    "delivered_pct": 100.0,
+    "decodable_pct": 100.0,
+    "lat_ms": {
+     "p50": 43.7215,
+     "p95": 49.874997,
+     "p99": 89.059133,
+     "max": 108.946919
+    },
+    "payloads_per_s": 15.048414934303004,
+    "goodput_kbit_s": 181.13917508293247,
+    "air_frames": 2045,
+    "air_bytes": 486156,
+    "air_frames_dropped": 0,
+    "air_bytes_per_payload": 1620.52,
+    "app_bytes_per_payload": 1504.6366666666668,
+    "backhaul_bytes_per_payload": 8309.51,
+    "cpu_ms_per_payload": 4.826883333333333,
+    "cpu_s_by_process": {
+     "device": 0.29,
+     "app": 0.21,
+     "gateway": 0.221,
+     "netserver": 0.679,
+     "mosquitto": 0.049
+    },
+    "fec_recovered": null
+   },
+   "old_tx": {
+    "stack": "old",
+    "payloads": 300,
+    "fragmented": true,
+    "air_frames": 2045,
+    "air_bytes": 486156,
+    "air_frames_dropped": 0,
+    "send_wall_s": 19.9341,
+    "backhaul_bytes": 2492853,
+    "cpu_s": {
+     "device": 0.290111,
+     "app": 0.209841,
+     "gateway": 0.22068,
+     "netserver": 0.678839,
+     "mosquitto": 0.048594
+    }
+   },
+   "moq": {
+    "payloads": 300,
+    "delivered": 300,
+    "wrong_bytes": 0,
+    "delivered_pct": 100.0,
+    "decodable_pct": 100.0,
+    "lat_ms": {
+     "p50": 0.189846,
+     "p95": 0.272078,
+     "p99": 0.358433,
+     "max": 5.830177
+    },
+    "payloads_per_s": 15.050074521409707,
+    "goodput_kbit_s": 181.15915168783062,
+    "air_frames": 2395,
+    "air_bytes": 567699,
+    "air_frames_dropped": 0,
+    "air_bytes_per_payload": 1892.33,
+    "app_bytes_per_payload": 1504.6366666666668,
+    "backhaul_bytes_per_payload": 0.0,
+    "cpu_ms_per_payload": 0.14922,
+    "cpu_s_by_process": {
+     "tx": 0.019,
+     "rx": 0.026
+    },
+    "fec_recovered": 0
+   },
+   "moq_tx": {
+    "stack": "moq-lora",
+    "payloads": 300,
+    "air_frames": 2395,
+    "air_bytes": 567699,
+    "air_frames_dropped": 0,
+    "send_wall_s": 19.9335,
+    "fec_k": 8,
+    "min_frame": 96,
+    "cipher": "chacha20poly1305",
+    "backhaul_bytes": 0,
+    "cpu_s": {
+     "tx": 0.019136999999999998,
+     "rx": 0.025629
+    },
+    "rx": {
+     "stack": "moq-lora",
+     "frames_rx": 2395,
+     "delivered": 300,
+     "objects_lost": 0,
+     "auth_failures": 0,
+     "fec_recovered": 0
+    }
+   },
+   "model": {
+    "old": {
+     "frames": 2045,
+     "airtime_ms_per_payload": 1128.5781333333334,
+     "channel_busy_pct": 1692.867284643364,
+     "class_a_send_s": 4428.57344,
+     "radio": "LoRa SF8/500 kHz CR4/5, 8-symbol preamble (US915 DR4)"
+    },
+    "workload_s": 19.999999000000003,
+    "moq": {
+     "frames": 2395,
+     "airtime_ms_per_payload": 52.803911111111105,
+     "channel_busy_pct": 79.20587062696019,
+     "radio": "FSK 300 kbit/s, 6-byte preamble, 2-byte sync, CRC-16"
+    }
+   }
+  },
+  {
+   "workload": "video",
+   "loss": 0.01,
+   "old": {
+    "payloads": 300,
+    "delivered": 283,
+    "wrong_bytes": 0,
+    "delivered_pct": 94.33333333333333,
+    "decodable_pct": 69.0,
+    "lat_ms": {
+     "p50": 43.169338,
+     "p95": 49.690696,
+     "p99": 90.956389,
+     "max": 92.302296
+    },
+    "payloads_per_s": 14.167693478428394,
+    "goodput_kbit_s": 168.97622780393382,
+    "air_frames": 2045,
+    "air_bytes": 486156,
+    "air_frames_dropped": 18,
+    "air_bytes_per_payload": 1620.52,
+    "app_bytes_per_payload": 1504.6366666666668,
+    "backhaul_bytes_per_payload": 8233.626666666667,
+    "cpu_ms_per_payload": 4.791060070671378,
+    "cpu_s_by_process": {
+     "device": 0.299,
+     "app": 0.209,
+     "gateway": 0.213,
+     "netserver": 0.59,
+     "mosquitto": 0.045
+    },
+    "fec_recovered": null
+   },
+   "old_tx": {
+    "stack": "old",
+    "payloads": 300,
+    "fragmented": true,
+    "air_frames": 2045,
+    "air_bytes": 486156,
+    "air_frames_dropped": 18,
+    "send_wall_s": 19.934,
+    "backhaul_bytes": 2470088,
+    "cpu_s": {
+     "device": 0.298811,
+     "app": 0.209352,
+     "gateway": 0.213011,
+     "netserver": 0.590044,
+     "mosquitto": 0.044652
+    }
+   },
+   "moq": {
+    "payloads": 300,
+    "delivered": 299,
+    "wrong_bytes": 0,
+    "delivered_pct": 99.66666666666667,
+    "decodable_pct": 96.0,
+    "lat_ms": {
+     "p50": 0.182209,
+     "p95": 0.289844,
+     "p99": 0.356226,
+     "max": 2.568341
+    },
+    "payloads_per_s": 14.999822797912794,
+    "goodput_kbit_s": 180.62836779878018,
+    "air_frames": 2395,
+    "air_bytes": 567699,
+    "air_frames_dropped": 21,
+    "air_bytes_per_payload": 1892.33,
+    "app_bytes_per_payload": 1504.6366666666668,
+    "backhaul_bytes_per_payload": 0.0,
+    "cpu_ms_per_payload": 0.1557458193979933,
+    "cpu_s_by_process": {
+     "tx": 0.02,
+     "rx": 0.026
+    },
+    "fec_recovered": 17
+   },
+   "moq_tx": {
+    "stack": "moq-lora",
+    "payloads": 300,
+    "air_frames": 2395,
+    "air_bytes": 567699,
+    "air_frames_dropped": 21,
+    "send_wall_s": 19.9335,
+    "fec_k": 8,
+    "min_frame": 96,
+    "cipher": "chacha20poly1305",
+    "backhaul_bytes": 0,
+    "cpu_s": {
+     "tx": 0.020371999999999998,
+     "rx": 0.026196
+    },
+    "rx": {
+     "stack": "moq-lora",
+     "frames_rx": 2374,
+     "delivered": 299,
+     "objects_lost": 1,
+     "auth_failures": 0,
+     "fec_recovered": 17
+    }
+   },
+   "model": {
+    "old": {
+     "frames": 2045,
+     "airtime_ms_per_payload": 1128.5781333333334,
+     "channel_busy_pct": 1692.867284643364,
+     "class_a_send_s": 4428.57344,
+     "radio": "LoRa SF8/500 kHz CR4/5, 8-symbol preamble (US915 DR4)"
+    },
+    "workload_s": 19.999999000000003,
+    "moq": {
+     "frames": 2395,
+     "airtime_ms_per_payload": 52.803911111111105,
+     "channel_busy_pct": 79.20587062696019,
+     "radio": "FSK 300 kbit/s, 6-byte preamble, 2-byte sync, CRC-16"
+    }
+   }
+  }
+ ],
+ "unpaced": [
+  {
+   "workload": "sensor",
+   "loss": 0.0,
+   "old": {
+    "payloads": 400,
+    "delivered": 340,
+    "wrong_bytes": 0,
+    "delivered_pct": 85.0,
+    "decodable_pct": 85.0,
+    "lat_ms": {
+     "p50": 22.83716,
+     "p95": 74.776564,
+     "p99": 74.794112,
+     "max": 74.799228
+    },
+    "payloads_per_s": 4221.858935399909,
+    "goodput_kbit_s": 405.29845779839115,
+    "air_frames": 400,
+    "air_bytes": 10000,
+    "air_frames_dropped": 0,
+    "air_bytes_per_payload": 25.0,
+    "app_bytes_per_payload": 12.0,
+    "backhaul_bytes_per_payload": 588.675,
+    "cpu_ms_per_payload": 1.1087735294117647,
+    "cpu_s_by_process": {
+     "device": 0.102,
+     "app": 0.09,
+     "gateway": 0.05,
+     "netserver": 0.129,
+     "mosquitto": 0.007
+    },
+    "fec_recovered": null
+   },
+   "old_tx": {
+    "stack": "old",
+    "payloads": 400,
+    "fragmented": false,
+    "air_frames": 400,
+    "air_bytes": 10000,
+    "air_frames_dropped": 0,
+    "send_wall_s": 0.0069,
+    "backhaul_bytes": 235470,
+    "cpu_s": {
+     "device": 0.10162199999999999,
+     "app": 0.090318,
+     "gateway": 0.049775,
+     "netserver": 0.12850799999999998,
+     "mosquitto": 0.0067599999999999995
+    }
+   },
+   "moq": {
+    "payloads": 400,
+    "delivered": 400,
+    "wrong_bytes": 0,
+    "delivered_pct": 100.0,
+    "decodable_pct": 100.0,
+    "lat_ms": {
+     "p50": 0.006288,
+     "p95": 0.081714,
+     "p99": 0.147686,
+     "max": 0.220111
+    },
+    "payloads_per_s": 174972.3871701497,
+    "goodput_kbit_s": 16797.34916833437,
+    "air_frames": 800,
+    "air_bytes": 76800,
+    "air_frames_dropped": 0,
+    "air_bytes_per_payload": 192.0,
+    "app_bytes_per_payload": 12.0,
+    "backhaul_bytes_per_payload": 0.0,
+    "cpu_ms_per_payload": 0.0189275,
+    "cpu_s_by_process": {
+     "tx": 0.004,
+     "rx": 0.004
+    },
+    "fec_recovered": 0
+   },
+   "moq_tx": {
+    "stack": "moq-lora",
+    "payloads": 400,
+    "air_frames": 800,
+    "air_bytes": 76800,
+    "air_frames_dropped": 0,
+    "send_wall_s": 0.0023,
+    "fec_k": 8,
+    "min_frame": 96,
+    "cipher": "chacha20poly1305",
+    "backhaul_bytes": 0,
+    "cpu_s": {
+     "tx": 0.0036309999999999997,
+     "rx": 0.00394
+    },
+    "rx": {
+     "stack": "moq-lora",
+     "frames_rx": 800,
+     "delivered": 400,
+     "objects_lost": 0,
+     "auth_failures": 0,
+     "fec_recovered": 0
+    }
+   }
+  },
+  {
+   "workload": "video",
+   "loss": 0.0,
+   "old": {
+    "payloads": 300,
+    "delivered": 188,
+    "wrong_bytes": 0,
+    "delivered_pct": 62.666666666666664,
+    "decodable_pct": 42.0,
+    "lat_ms": {
+     "p50": 51.153502,
+     "p95": 58.140932,
+     "p99": 61.340777,
+     "max": 62.35196
+    },
+    "payloads_per_s": 805.2124520075175,
+    "goodput_kbit_s": 9685.1981658254,
+    "air_frames": 2045,
+    "air_bytes": 486156,
+    "air_frames_dropped": 0,
+    "air_bytes_per_payload": 1620.52,
+    "app_bytes_per_payload": 1504.6366666666668,
+    "backhaul_bytes_per_payload": 6693.863333333334,
+    "cpu_ms_per_payload": 3.97438829787234,
+    "cpu_s_by_process": {
+     "device": 0.231,
+     "app": 0.097,
+     "gateway": 0.086,
+     "netserver": 0.322,
+     "mosquitto": 0.011
+    },
+    "fec_recovered": null
+   },
+   "old_tx": {
+    "stack": "old",
+    "payloads": 300,
+    "fragmented": true,
+    "air_frames": 2045,
+    "air_bytes": 486156,
+    "air_frames_dropped": 0,
+    "send_wall_s": 0.1897,
+    "backhaul_bytes": 2008159,
+    "cpu_s": {
+     "device": 0.230989,
+     "app": 0.09729999999999998,
+     "gateway": 0.08588199999999999,
+     "netserver": 0.322114,
+     "mosquitto": 0.0109
+    }
+   },
+   "moq": {
+    "payloads": 300,
+    "delivered": 300,
+    "wrong_bytes": 0,
+    "delivered_pct": 100.0,
+    "decodable_pct": 100.0,
+    "lat_ms": {
+     "p50": 0.041613,
+     "p95": 0.21118,
+     "p99": 0.221924,
+     "max": 0.250106
+    },
+    "payloads_per_s": 60521.37958081278,
+    "goodput_kbit_s": 728501.4946763376,
+    "air_frames": 2395,
+    "air_bytes": 567699,
+    "air_frames_dropped": 0,
+    "air_bytes_per_payload": 1892.33,
+    "app_bytes_per_payload": 1504.6366666666668,
+    "backhaul_bytes_per_payload": 0.0,
+    "cpu_ms_per_payload": 0.044059999999999995,
+    "cpu_s_by_process": {
+     "tx": 0.006,
+     "rx": 0.007
+    },
+    "fec_recovered": 0
+   },
+   "moq_tx": {
+    "stack": "moq-lora",
+    "payloads": 300,
+    "air_frames": 2395,
+    "air_bytes": 567699,
+    "air_frames_dropped": 0,
+    "send_wall_s": 0.005,
+    "fec_k": 8,
+    "min_frame": 96,
+    "cipher": "chacha20poly1305",
+    "backhaul_bytes": 0,
+    "cpu_s": {
+     "tx": 0.006324,
+     "rx": 0.006893999999999999
+    },
+    "rx": {
+     "stack": "moq-lora",
+     "frames_rx": 2395,
+     "delivered": 300,
+     "objects_lost": 0,
+     "auth_failures": 0,
+     "fec_recovered": 0
+    }
+   }
+  }
+ ],
+ "command": {
+  "old": {
+   "events": 25,
+   "delivered": 0,
+   "bytes_in": 10021,
+   "incomplete": 0,
+   "count": 10,
+   "timeouts": 0,
+   "rtt_ms": [
+    1936.629333,
+    1733.283334,
+    2305.700144,
+    2472.543457,
+    1487.3567,
+    1011.053546,
+    1098.414903,
+    2699.547567,
+    2418.363319,
+    1814.012761
+   ],
+   "p50": 1936.629333,
+   "p95": 2699.547567,
+   "max": 2699.547567
+  },
+  "moq": {
+   "stack": "moq-lora",
+   "count": 10,
+   "timeouts": 0,
+   "rtt_ms": [
+    152.8745,
+    0.3872,
+    0.2485,
+    0.2475,
+    0.4087,
+    0.4152,
+    0.0632,
+    0.0643,
+    0.2749,
+    0.0593
+   ],
+   "p50": 0.2749,
+   "p95": 152.8745,
+   "max": 152.8745
+  },
+  "interval_s": 2.0,
+  "airtime_add_ms": {
+   "old": 37.312,
+   "moq": 4.053333333333334
+  }
+ }
+}

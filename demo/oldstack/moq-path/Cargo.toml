@@ -1,0 +1,18 @@
+[package]
+name = "moq-lora-oldstack-demo"
+version = "0.1.0"
+description = "The moq-lora side of the old-stack comparison demo: frames payloads with moq-lora-wire over a simulated (UDP) air link"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "moq-path"
+path = "src/main.rs"
+
+[dependencies]
+moq-lora-wire = { path = "../../../moq-lora-wire" }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
