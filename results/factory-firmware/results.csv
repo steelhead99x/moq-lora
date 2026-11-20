@@ -1,0 +1,8 @@
+run,jpeg,jpeg_bytes,chunks,passes,packets_sent_total,pass1_sent,pass1_received,pass1_loss_pct,reassembled,byte_identical,end_to_end_s,goodput_bit_s,rssi_min_dbm,rssi_max_dbm,calc_airtime_per_packet_ms,calc_airtime_total_s
+large-320x240-q10-run1,f320x240-q10.jpg,8618,72,2,78,72,66,8.33,True,True,112.46,613.1,-39,-35,389.4,30.37
+large-320x240-q10-run2,f320x240-q10.jpg,8618,72,3,78,72,67,6.94,True,True,116.74,590.6,-39,-35,389.4,30.37
+large-320x240-q10-run3,f320x240-q10.jpg,8618,72,4,83,72,63,12.5,True,True,127.34,541.4,-39,-35,389.4,32.32
+small-160x120-q20-run1,f160x120-q20.jpg,2346,20,2,22,20,18,10.0,True,True,37.61,499.0,-38,-35,389.4,8.57
+small-160x120-q20-run2,f160x120-q20.jpg,2346,20,2,21,20,19,5.0,True,True,36.33,516.6,-37,-35,389.4,8.18
+small-160x120-q20-run3,f160x120-q20.jpg,2346,20,1,20,20,20,0.0,True,True,30.54,614.6,-37,-35,389.4,7.79
+smoke-160x120,f160x120-q20.jpg,2346,20,1,20,20,17,15.0,False,False,30.51,,-38,-35,389.4,7.79

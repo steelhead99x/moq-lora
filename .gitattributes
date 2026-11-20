@@ -1,1 +1,5 @@
 quest/** merge=quest
+
+# vendor firmware images are binary
+*.uf2 binary
+*.bin binary

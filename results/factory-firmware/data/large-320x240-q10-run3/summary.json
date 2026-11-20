@@ -1,0 +1,69 @@
+{
+ "label": "large-320x240-q10-run3",
+ "jpeg": "f320x240-q10.jpg",
+ "jpeg_bytes": 8618,
+ "jpeg_sha256": "a1694c226ed4be9e1056c8cd102c84ef2107f6715f397dd43e4a2ae25ef25830",
+ "chunks_total": 72,
+ "chunks_attempted_pass1": 72,
+ "payload_bytes_per_packet_max": 250,
+ "calc_airtime_per_packet_ms": 389.4,
+ "passes": [
+  {
+   "pass_no": 1,
+   "sent": 72,
+   "received_packets": 63,
+   "received_unique": 63,
+   "malformed": 0,
+   "loss_pct": 12.5,
+   "tx_wall_s": 96.86,
+   "rssi_min": -39,
+   "rssi_max": -35,
+   "rssi_mean": -37.1
+  },
+  {
+   "pass_no": 2,
+   "sent": 9,
+   "received_packets": 8,
+   "received_unique": 8,
+   "malformed": 0,
+   "loss_pct": 11.11,
+   "tx_wall_s": 12.62,
+   "rssi_min": -39,
+   "rssi_max": -37,
+   "rssi_mean": -37.6
+  },
+  {
+   "pass_no": 3,
+   "sent": 1,
+   "received_packets": 0,
+   "received_unique": 0,
+   "malformed": 0,
+   "loss_pct": 100.0,
+   "tx_wall_s": 1.91,
+   "rssi_min": null,
+   "rssi_max": null,
+   "rssi_mean": null
+  },
+  {
+   "pass_no": 4,
+   "sent": 1,
+   "received_packets": 1,
+   "received_unique": 1,
+   "malformed": 0,
+   "loss_pct": 0.0,
+   "tx_wall_s": 2.0,
+   "rssi_min": -36,
+   "rssi_max": -36,
+   "rssi_mean": -36.0
+  }
+ ],
+ "total_packets_sent": 83,
+ "pass1_loss_pct": 12.5,
+ "reassembled": true,
+ "matches_original": true,
+ "end_to_end_s": 127.34,
+ "tx_wall_total_s": 113.39,
+ "goodput_bit_s": 541.4,
+ "onair_text_rate_bit_s": 1464.0,
+ "calc_airtime_total_s": 32.32
+}

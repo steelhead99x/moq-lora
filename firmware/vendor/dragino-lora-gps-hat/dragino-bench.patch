@@ -1,0 +1,14 @@
+--- a/dragino_lora_app/main.c
++++ b/dragino_lora_app/main.c
+@@ -174 +174 @@
+-uint32_t  freq = 868100000; // in Mhz! (868.1)
++uint32_t  freq = 915000000; // in Mhz! (915.0)
+@@ -176 +176 @@
+-byte hello[32] = "HELLO";
++byte hello[256] = "HELLO";
+@@ -271 +271 @@
+-    writeReg(REG_SYNC_WORD, 0x34); // LoRaWAN public sync word
++    writeReg(REG_SYNC_WORD, 0x12); // stock CatWAN receiver sync word
+@@ -451 +451 @@
+-        configPower(23);
++        configPower(3); // +5 dBm

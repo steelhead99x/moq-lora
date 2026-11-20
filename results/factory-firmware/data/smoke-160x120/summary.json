@@ -1,0 +1,33 @@
+{
+ "label": "smoke-160x120",
+ "jpeg": "f160x120-q20.jpg",
+ "jpeg_bytes": 2346,
+ "jpeg_sha256": "3b17b4d088c9809936e28bc8759fa154dbd9c285d5ad5a78cdbf1d5d28ba1bf3",
+ "chunks_total": 20,
+ "chunks_attempted_pass1": 20,
+ "payload_bytes_per_packet_max": 250,
+ "calc_airtime_per_packet_ms": 389.4,
+ "passes": [
+  {
+   "pass_no": 1,
+   "sent": 20,
+   "received_packets": 17,
+   "received_unique": 17,
+   "malformed": 0,
+   "loss_pct": 15.0,
+   "tx_wall_s": 27.37,
+   "rssi_min": -38,
+   "rssi_max": -35,
+   "rssi_mean": -36.4
+  }
+ ],
+ "total_packets_sent": 20,
+ "pass1_loss_pct": 15.0,
+ "reassembled": false,
+ "matches_original": false,
+ "end_to_end_s": 30.51,
+ "tx_wall_total_s": 27.37,
+ "goodput_bit_s": null,
+ "onair_text_rate_bit_s": 1461.5,
+ "calc_airtime_total_s": 7.79
+}

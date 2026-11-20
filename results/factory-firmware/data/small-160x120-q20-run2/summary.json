@@ -1,0 +1,45 @@
+{
+ "label": "small-160x120-q20-run2",
+ "jpeg": "f160x120-q20.jpg",
+ "jpeg_bytes": 2346,
+ "jpeg_sha256": "3b17b4d088c9809936e28bc8759fa154dbd9c285d5ad5a78cdbf1d5d28ba1bf3",
+ "chunks_total": 20,
+ "chunks_attempted_pass1": 20,
+ "payload_bytes_per_packet_max": 250,
+ "calc_airtime_per_packet_ms": 389.4,
+ "passes": [
+  {
+   "pass_no": 1,
+   "sent": 20,
+   "received_packets": 19,
+   "received_unique": 19,
+   "malformed": 0,
+   "loss_pct": 5.0,
+   "tx_wall_s": 27.37,
+   "rssi_min": -37,
+   "rssi_max": -35,
+   "rssi_mean": -35.8
+  },
+  {
+   "pass_no": 2,
+   "sent": 1,
+   "received_packets": 1,
+   "received_unique": 1,
+   "malformed": 0,
+   "loss_pct": 0.0,
+   "tx_wall_s": 2.05,
+   "rssi_min": -36,
+   "rssi_max": -36,
+   "rssi_mean": -36.0
+  }
+ ],
+ "total_packets_sent": 21,
+ "pass1_loss_pct": 5.0,
+ "reassembled": true,
+ "matches_original": true,
+ "end_to_end_s": 36.33,
+ "tx_wall_total_s": 29.42,
+ "goodput_bit_s": 516.6,
+ "onair_text_rate_bit_s": 1427.6,
+ "calc_airtime_total_s": 8.18
+}

@@ -1,0 +1,33 @@
+{
+ "label": "small-160x120-q20-run3",
+ "jpeg": "f160x120-q20.jpg",
+ "jpeg_bytes": 2346,
+ "jpeg_sha256": "3b17b4d088c9809936e28bc8759fa154dbd9c285d5ad5a78cdbf1d5d28ba1bf3",
+ "chunks_total": 20,
+ "chunks_attempted_pass1": 20,
+ "payload_bytes_per_packet_max": 250,
+ "calc_airtime_per_packet_ms": 389.4,
+ "passes": [
+  {
+   "pass_no": 1,
+   "sent": 20,
+   "received_packets": 20,
+   "received_unique": 20,
+   "malformed": 0,
+   "loss_pct": 0.0,
+   "tx_wall_s": 27.46,
+   "rssi_min": -37,
+   "rssi_max": -35,
+   "rssi_mean": -36.0
+  }
+ ],
+ "total_packets_sent": 20,
+ "pass1_loss_pct": 0.0,
+ "reassembled": true,
+ "matches_original": true,
+ "end_to_end_s": 30.54,
+ "tx_wall_total_s": 27.46,
+ "goodput_bit_s": 614.6,
+ "onair_text_rate_bit_s": 1456.7,
+ "calc_airtime_total_s": 7.79
+}
