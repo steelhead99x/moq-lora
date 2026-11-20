@@ -1,5 +1,10 @@
 # Code review
 
+This review was written on 2026-11-17 against commit `826f1b9`, and sections were updated as
+fixes merged. File and line references (`lib.rs:494`) point at the tree as it was reviewed and
+have drifted since; the function and type names are the reliable pointers. Sections marked
+Fixed describe the code on `main`.
+
 Review of the `video-demo` tree for a public release: `moq-lora-wire`, `moq-lora-send`,
 `moq-lora-recv`, `moq-lora-report`, `vendor/sx1276`, `firmware/catwan-fw`, and `scripts/`.
 
@@ -260,7 +265,8 @@ Tests for the wire fixes are in `moq-lora-wire` (`hostile_frames_do_not_panic`,
 ## Private data and history
 
 No key, token, password, or private-key block was found in the tree or in any of the
-16 commits. No LAN address was found.
+16 commits. No LAN address was found. The scan was repeated on 2026-11-20 over every commit
+on every branch (115 on `main`) with the same result.
 
 Scrubbed from the working tree:
 
