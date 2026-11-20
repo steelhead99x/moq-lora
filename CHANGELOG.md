@@ -7,9 +7,12 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 
 ### Renamed
 
-* **The project is now moq-subghz** (was moq-lora). The crates and tools are `moq-subghz-send`,
-  `moq-subghz-recv`, `moq-subghz-wire`, `moq-subghz-pi` and `moq-subghz-report`. The video never
-  went over LoRa modulation, and the framing isn't tied to one radio chip.
+* **The project is now moq-subghz** (it was moq-lora), and the repository moved to
+  `steelhead99x/moq-subghz`. The old address redirects. The video never went over LoRa
+  modulation, and the framing isn't tied to one radio chip.
+* The crates and tools follow: `moq-subghz-send`, `moq-subghz-recv`, `moq-subghz-wire`,
+  `moq-subghz-pi`, `moq-subghz-report` and `moq-subghz-publish`. The default key file is
+  `moq-subghz-key.hex`, and the publisher reads `MOQ_SUBGHZ_RELAY`.
 
 ### Changed on the air
 
@@ -30,6 +33,15 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   can no longer go negative or count billions of frames.
 * Loss accounting separates late, stray and stale frames.
 * The receiver keeps every decoded frame, including the first GOP.
+
+### Republish to MoQ
+
+* New `moq-subghz-publish` crate: republishes the received groups and objects 1:1 as a real MoQ
+  broadcast (hang format) through moq.dev's `moq-net`, `moq-tokio` and `hang` crates, so a
+  moq.dev relay or moq.pro can fan it out and the moq.dev web player can show it. Separate
+  crate (Rust 1.91+), so the Pi binaries are unchanged. See [docs/MOQ.md](docs/MOQ.md).
+* `moq-subghz-recv --publish URL` feeds it the objects that pass the group gate.
+  `summary.json` gains `publish_dropped_objects`.
 
 ### Sender and tools
 
