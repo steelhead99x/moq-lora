@@ -1,0 +1,57 @@
+{
+ "label": "large-320x240-q10-run2",
+ "jpeg": "f320x240-q10.jpg",
+ "jpeg_bytes": 8618,
+ "jpeg_sha256": "a1694c226ed4be9e1056c8cd102c84ef2107f6715f397dd43e4a2ae25ef25830",
+ "chunks_total": 72,
+ "chunks_attempted_pass1": 72,
+ "payload_bytes_per_packet_max": 250,
+ "calc_airtime_per_packet_ms": 389.4,
+ "passes": [
+  {
+   "pass_no": 1,
+   "sent": 72,
+   "received_packets": 67,
+   "received_unique": 67,
+   "malformed": 0,
+   "loss_pct": 6.94,
+   "tx_wall_s": 96.87,
+   "rssi_min": -39,
+   "rssi_max": -35,
+   "rssi_mean": -37.0
+  },
+  {
+   "pass_no": 2,
+   "sent": 5,
+   "received_packets": 4,
+   "received_unique": 4,
+   "malformed": 0,
+   "loss_pct": 20.0,
+   "tx_wall_s": 7.38,
+   "rssi_min": -38,
+   "rssi_max": -37,
+   "rssi_mean": -37.8
+  },
+  {
+   "pass_no": 3,
+   "sent": 1,
+   "received_packets": 1,
+   "received_unique": 1,
+   "malformed": 0,
+   "loss_pct": 0.0,
+   "tx_wall_s": 1.91,
+   "rssi_min": -38,
+   "rssi_max": -38,
+   "rssi_mean": -38.0
+  }
+ ],
+ "total_packets_sent": 78,
+ "pass1_loss_pct": 6.94,
+ "reassembled": true,
+ "matches_original": true,
+ "end_to_end_s": 116.74,
+ "tx_wall_total_s": 106.16,
+ "goodput_bit_s": 590.6,
+ "onair_text_rate_bit_s": 1469.5,
+ "calc_airtime_total_s": 30.37
+}
