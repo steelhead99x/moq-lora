@@ -1,4 +1,4 @@
-# moq-lora in detail
+# moq-subghz in detail
 
 The long version of the [README](../README.md): how it works, the measured results, what is on the
 air, the repo map, limits and radio rules. Everything here used to live in the README.
