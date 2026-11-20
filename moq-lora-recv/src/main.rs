@@ -307,7 +307,7 @@ fn main() -> Result<()> {
         bail!("--freq must be inside 902-928 MHz and not 925.0");
     }
     // Both are printed into summary.json as numbers; NaN or infinity would make it invalid.
-    if !a.clock_offset_ms.is_finite() || !(a.stall_ms.is_finite() && a.stall_ms > 0.0) {
+    if !(a.clock_offset_ms.is_finite() && a.stall_ms.is_finite() && a.stall_ms > 0.0) {
         bail!("--clock-offset-ms must be finite and --stall-ms finite and positive");
     }
     let (w, h): (usize, usize) = {
