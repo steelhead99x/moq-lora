@@ -1,0 +1,1 @@
+sent frames=105 bytes=26064 wall_s=20.189 air_s_calc=18.100 duty_pct=89.7

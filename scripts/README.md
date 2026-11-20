@@ -15,6 +15,10 @@ before the Pi transmits, the reverse path waits 4 s before the laptop transmits)
 | `lora2015-frames.sh` | none | rebuilds the test pictures of `results/lora-2015/frames/` (ffmpeg, and `ssdv` for the SSDV files) |
 | `lora2015-table.sh` | none | prints the calculated airtime table of `results/lora-2015/README.md` from `lora2015-send --dry-run` |
 | `loss_sweep.py` | none | no radio: replays loopback recordings with radio frames removed, for `results/loopback/` |
+| `lora2015-run.sh` | Pi -> stick | one picture run for `results/stick-0.5.1/`: logger here, `lora2015-send` on the Pi, then the exact loss from a replay |
+| `bench-051.sh` | Pi -> stick | the whole `results/stick-0.5.1/` matrix (`PART=fsk`, `fsk-extra`, `lora` or `all`) |
+| `demo-051.sh` | Pi -> stick | the 6 minute guided demo of `results/stick-0.5.1/` |
+| `analyze-051.py`, `package-051.sh` | none | build the CSVs and charts of `results/stick-0.5.1/` from the runs, and copy the data worth keeping |
 
 ```sh
 export PORT=/dev/ttyACM0          # or /dev/cu.usbmodem* on macOS
