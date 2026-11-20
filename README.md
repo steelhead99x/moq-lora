@@ -1,7 +1,6 @@
 # moq-subghz
 
-DIY MoQ over LoRa. Formerly named moq-lora; the LoRa radio is still the first build. The tools
-were `moq-lora-*` until November 2026.
+DIY MoQ over LoRa. The LoRa radio is the first build.
 
 **DIY MoQ over LoRa: live video from a Raspberry Pi over a LoRa radio chip, written in Rust.**
 

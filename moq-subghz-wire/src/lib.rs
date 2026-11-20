@@ -14,7 +14,7 @@
 //!  4     obj     u8   object id within the group (0 = keyframe)
 //!  5     idx     u8   data fragment index, or parity block index if PARITY
 //!  6     nfrag   u8   number of data fragments in the object
-//!  7     flags   u8   bit0 PARITY, bits1..3 version (4), bits4..7 k (FEC block, 0 = none)
+//!  7     flags   u8   bit0 PARITY, bits1..3 version (5), bits4..7 k (FEC block, 0 = none)
 //!  8..10 objlen  u16  object length in bytes
 //! 10..12 crc     u16  CRC-16/CCITT-FALSE over the whole frame with this field zeroed
 //! 12..   payload     <= 243 bytes; an object is cut into `nfrag = ceil(len/243)` equal-size
@@ -177,9 +177,10 @@ pub fn parse_fsk_profile(s: &str) -> Result<FskProfile, &'static str> {
 pub const MAX_FRAME: usize = 255;
 pub const HDR_LEN: usize = 12;
 pub const MAX_CHUNK: usize = MAX_FRAME - HDR_LEN;
-/// Frame format version. 4: sealed objects carry a per-run salt (`seal`), so tools of
-/// version 3 and 4 refuse each other's frames instead of failing every tag.
-pub const VERSION: u8 = 4;
+/// Frame format version. 4: sealed objects carry a per-run salt (`seal`). 5: the key label
+/// became `moq-subghz object key v2` (the project rename), so tools of different versions refuse
+/// each other's frames instead of failing every tag.
+pub const VERSION: u8 = 5;
 pub const MAX_OBJECT: usize = 255 * MAX_CHUNK; // 61965 B (fits u16)
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

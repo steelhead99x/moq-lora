@@ -1,7 +1,7 @@
 # Security
 
-moq-subghz (formerly moq-lora) is a hobby project and a bench demo. It is not audited, and it
-should not carry anything you need kept secret.
+moq-subghz is a hobby project and a bench demo. It is not audited, and it should not carry
+anything you need kept secret.
 
 ## What the encryption covers
 

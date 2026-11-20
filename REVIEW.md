@@ -116,7 +116,7 @@ the clear, other objects its first 4 bytes. The sender draws a new salt when the
 receiver caches a salt's subkey only after an object under it authenticates, so a
 forged object 0 can't evict the real one (a replayed one can; see "Replayed frames").
 Until an object 0 authenticates, a receiver that joins mid-run counts the rest of that
-group as `auth_fail`, so that counter mixes "no key yet" with tampering. Frame `VERSION` is 4 for this format.
+group as `auth_fail`, so that counter mixes "no key yet" with tampering. Frame `VERSION` was 4 for this format and is 5 since the rename changed the key label.
 
 Tag comparison is rind's `ct_equal` (ChaCha20-Poly1305 and AES-GCM `open`). This crate
 does not compare tags itself. rind's `Key` drop wipes its copy; `open_sealer`

@@ -19,10 +19,11 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 * **Frame format version 4.** Encrypted objects now carry a per-run salt, and each run encrypts
   under its own subkey derived from the pre-shared key. The first frame of each GOP carries 28
   bytes of overhead and the rest 20. Version 3 and version 4 tools refuse each other's frames.
-* The key-derivation label was renamed with the project, so encrypted version 4 output from before
-  the rename can't be opened, and a sender and receiver built on either side of the rename
-  can't read each other's encrypted frames (they show up as `auth_fail`). No such output was
-  published. Rebuild both ends together.
+* **Breaking: frame format version 5.** The key-derivation label (the HKDF info string) is now
+  `moq-subghz object key v2`, and the frame header version went from 4 to 5. A sender and
+  receiver built before and after this change refuse each other's frames, and encrypted output
+  recorded before it can't be opened. Update the Pi and the laptop together. The pre-shared key
+  still works once the file is named `moq-subghz-key.hex`.
 
 ### Receiver
 
