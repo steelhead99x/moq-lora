@@ -73,6 +73,24 @@ radio frames and the others about 6, so a one-second GOP is about 100 radio fram
   radio patterns. The worst single freeze at 1% loss with FEC k=8 was 1.1 s. The full numbers are in
   [`sweep.csv`](sweep.csv).
 
+## Too much video for the link
+
+A separate pair of 120 s recordings asked the encoder for 300 kbit/s, more than this link carries
+with FEC k=8. One used the default rule (drop anything older than 1 s, and the rest of its GOP),
+the other switched the rule off with `--max-age-ms 600000`.
+
+| | age limit 1 s | no age limit |
+|---|---|---|
+| video frames sent on | 1243 of 1804 | 1804 of 1804 |
+| GOPs cut short by the sender | 61 | 0 |
+| longest queue, radio frames | 249 | 6615 |
+| longest queue, as air time | about 1.8 s | about 48 s |
+
+With the rule, the sender gives up 31% of the frames and stays within two seconds of live. Without
+it, nothing is dropped and after two minutes the picture is 48 seconds old and still falling
+behind. (Queue time is the queue length times 7.2 ms, the air time of one radio frame in these
+recordings.)
+
 ## How far to trust it
 
 * The replay reproduces the radio. Laying the loss pattern of each run over a new recording
@@ -108,6 +126,11 @@ mkdir -p /tmp/rec
  $S --loopback k4.air    --secs 300 --fec-k 4 > k4.send_summary.json &
  $S --loopback k8.air    --secs 300 --fec-k 8 > k8.send_summary.json &
  $S --loopback k8enc.air --secs 300 --fec-k 8 --key-file key.hex > k8enc.send_summary.json &
+ wait)
+# the overload pair
+(cd /tmp/rec && mkdir -p over && cd over
+ $S --loopback a.air --secs 120 --fec-k 8 --bitrate 300000 > overload_age1s.send_summary.json &
+ $S --loopback b.air --secs 120 --fec-k 8 --bitrate 300000 --max-age-ms 600000 > overload_noage.send_summary.json &
  wait)
 python3 scripts/loss_sweep.py sweep --recv target/release/moq-subghz-recv --rec /tmp/rec \
   --runs results/video/*/ --out results/loopback
