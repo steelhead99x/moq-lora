@@ -11,17 +11,23 @@
 //!   R            continuous receive; each packet -> "R <t_us> <rssi> <snr_q> <hex>"
 //!   Q <hex>      queue a packet; queued packets are sent back to back ("B <t_us>" at start, "D <t_us> <n>" when drained)
 //!   S            standby + stats      I   info      BOOT   reboot into the RP2040 USB bootloader
+//!   X            re-initialise the radio: RESET pulse, retry until RegVersion reads 0x12 ->
+//!                "X sx_version=0x12 tries=<n>"
+//! The radio RESET line is pulsed at boot (with retries), so `I` answers `sx_version=0x12`
+//! right after power-up. Before 0.5.1 the line was left low (chip held in reset) until the
+//! first `L` or `F`, so an early `I` read 0x00.
 //! Opening the port at 1200 baud and dropping DTR also reboots into the bootloader.
 //!
 //! `L` and `F` accept 2..=17 dBm and program whatever carrier frequency they are
 //! given. The host tools (`moq-subghz-send`, `moq-subghz-recv`) refuse anything above
 //! +5 dBm and anything outside 902-928 MHz (and 925.0 MHz) before they send these
-//! commands. The measured image is `firmware/catwan-fw-v5.uf2`; it was not
-//! regenerated here. Tightening the clamp means a new image and a reflash.
+//! commands. The measured image is `firmware/catwan-fw-v5.uf2` (0.5.0); 0.5.1 changes
+//! only the radio start-up and adds `X`. Tightening the clamp means a new image and a reflash.
 #![no_std]
 #![no_main]
 
 use core::fmt::Write as _;
+use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::OutputPin;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use hal::{
@@ -40,6 +46,27 @@ pub static BOOT2_FIRMWARE: [u8; 256] = rp2040_boot2::BOOT_LOADER_W25Q080;
 
 const XOSC_HZ: u32 = 12_000_000;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Pulse the radio RESET line and read `RegVersion` until it answers 0x12 (SX1276).
+/// RESET is active low. The pin is an output that starts low, so without a pulse the chip
+/// stays in reset and every register reads 0x00. Each try holds RESET low a little longer
+/// and waits a little longer after release. Returns (last version read, tries used).
+macro_rules! bring_up {
+    ($radio:expr, $timer:expr) => {{
+        let mut v = 0u8;
+        let mut tries = 0u8;
+        while tries < 5 {
+            tries += 1;
+            let _ = $radio.reset();
+            $timer.delay_ms(5 * tries as u32);
+            v = $radio.version().unwrap_or(0);
+            if v == 0x12 {
+                break;
+            }
+        }
+        (v, tries)
+    }};
+}
 
 #[derive(Copy, Clone, PartialEq)]
 enum Modem {
@@ -141,6 +168,8 @@ fn main() -> ! {
     );
     let dev = ExclusiveDevice::new(spi, nss, timer).unwrap();
     let mut radio = Sx1276::new(dev, rst, PolledIrq::new(dio0, timer, 5), timer);
+    let mut boot_timer = timer;
+    let _ = bring_up!(radio, boot_timer);
 
     let usb_bus = UsbBusAllocator::new(UsbBus::new(
         pac.USBCTRL_REGS,
@@ -227,7 +256,12 @@ fn main() -> ! {
                                         },
                                         ..LoRaConfig::default()
                                     };
-                                    let r = radio.init(f, &cfg).and_then(|_| {
+                                    let mut r0 = radio.init(f, &cfg);
+                                    if matches!(r0, Err(sx1276::Error::BadVersion(_))) {
+                                        let _ = bring_up!(radio, boot_timer);
+                                        r0 = radio.init(f, &cfg);
+                                    }
+                                    let r = r0.and_then(|_| {
                                         radio
                                             .set_tx_power(PaOutput::PaBoost, dbm.clamp(2, 17) as i8)
                                     });
@@ -247,8 +281,12 @@ fn main() -> ! {
                                         unchecked: force != 0,
                                         ..FskConfig::default()
                                     };
-                                    let r = radio
-                                        .init(f, &LoRaConfig::default())
+                                    let mut r0 = radio.init(f, &LoRaConfig::default());
+                                    if matches!(r0, Err(sx1276::Error::BadVersion(_))) {
+                                        let _ = bring_up!(radio, boot_timer);
+                                        r0 = radio.init(f, &LoRaConfig::default());
+                                    }
+                                    let r = r0
                                         .and_then(|_| radio.enter_fsk_mode())
                                         .and_then(|_| radio.set_frequency(f))
                                         .and_then(|_| radio.write_raw(0x0C, 0x23)) // LNA max gain + HF boost
@@ -307,6 +345,13 @@ fn main() -> ! {
                                         v,
                                         now()
                                     );
+                                }
+                                b"X" => {
+                                    let (v, tries) = bring_up!(radio, boot_timer);
+                                    state = State::Idle;
+                                    txq.clear();
+                                    tx_busy = false;
+                                    let _ = write!(s, "X sx_version=0x{:02x} tries={}", v, tries);
                                 }
                                 b"BOOT" => hal::rom_data::reset_to_usb_boot(1 << 25, 0),
                                 _ => {

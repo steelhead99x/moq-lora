@@ -94,7 +94,10 @@ cycle, usually 1%, so a 400 ms frame must be followed by about 40 s of silence. 
 ## What you need
 
 * The Pi with the Dragino HAT, an antenna on it, and the 915 MHz stick on the Mac with its antenna.
-* The stick on `catwan-fw` v5 (`firmware/catwan-fw-v5.uf2`), the image the other runs used.
+* The stick on `catwan-fw` v5 (`firmware/catwan-fw-v5.uf2`), the image the other runs used, or 0.5.1
+  (`firmware/catwan-fw-0.5.1.uf2`), which only fixes the radio start-up (see the CHANGELOG).
+  On v5 the logger's first `I` can read `sx_version=0x00` right after power-up; the radio is
+  fine, and 0.5.1 does not have this.
   **Do not reflash it for this test.** The logger checks the banner and refuses another version.
 * The `ssdv` tool on the Mac, to turn rebuilt SSDV packets back into a picture (optional; the
   packets are saved either way): `git clone https://codeberg.org/fsphil/ssdv && cd ssdv && make`.

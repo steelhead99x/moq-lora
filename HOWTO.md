@@ -77,7 +77,9 @@ The only thing the Pi needs besides these two files is ffmpeg.
 
 ## 4. Flash the USB stick
 
-The stick needs this repo's firmware. A prebuilt image is at `firmware/catwan-fw-v5.uf2`.
+The stick needs this repo's firmware. A prebuilt image is at `firmware/catwan-fw-0.5.1.uf2`. The runs in `results/video/` used the
+earlier `firmware/catwan-fw-v5.uf2` (0.5.0), which answers `I` with `sx_version=0x00` until the first `L` or
+`F` command; 0.5.1 fixes that and is otherwise the same.
 
 1. **Back up the stick first.** Hold its BOOT button while plugging it in. Then, with
    [picotool](https://github.com/raspberrypi/picotool):
@@ -85,10 +87,11 @@ The stick needs this repo's firmware. A prebuilt image is at `firmware/catwan-fw
    picotool info -a                              # check that it's the stick
    picotool save -a catwan-backup.bin
    ```
-2. Flash it: `picotool load -x firmware/catwan-fw-v5.uf2`, or drag the `.uf2` onto the
+2. Flash it: `picotool load -x firmware/catwan-fw-0.5.1.uf2`, or drag the `.uf2` onto the
    `RPI-RP2` drive that appears.
 3. Check it: open the serial port (macOS `/dev/cu.usbmodem*`, Linux `/dev/ttyACM0`), type `I`
-   and press Enter. It should answer `I catwan-fw ...`.
+   and press Enter. It should answer `I catwan-fw 0.5.1 sx_version=0x12 ...`. If it shows
+   `sx_version=0x00`, send `X` (re-initialise the radio); on 0.5.0 send an `L` command first.
 
 To build the firmware yourself instead:
 
