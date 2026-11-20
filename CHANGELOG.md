@@ -2,30 +2,28 @@
 
 ## Unreleased
 
-### Renamed
-
-* The project is now called moq-subghz (formerly moq-lora), and the repository moved to
-  `steelhead99x/moq-subghz`. The old address redirects. Every crate, binary, environment variable,
-  key file name and the encryption label now use the moq-subghz name too: `moq-subghz-wire`,
-  `-pi`, `-send`, `-recv`, `-report`, `-publish`, `MOQ_SUBGHZ_*`, `moq-subghz-key.hex`. Rename
-  your key file and your scripts' paths when you update.
-
-### Breaking: frame format version 5
-
-* **Both ends must update together.** The encryption key label (the HKDF info string) changed to
-  `moq-subghz object key v2`, so subkeys derived from the same pre-shared key are different, and
-  the frame header version went from 4 to 5. Version 4 and version 5 tools refuse each other's
-  frames and cannot read each other's recordings. The pre-shared key file itself still works, once
-  renamed to `moq-subghz-key.hex`.
-
 Changes since the runs in `results/video/` were measured (2026-11-17). None of these has been
 run on the radios yet, only through the no-radio loopback and the unit tests.
+
+### Renamed
+
+* **The project is now moq-subghz** (it was moq-lora), and the repository moved to
+  `steelhead99x/moq-subghz`. The old address redirects. The video never went over LoRa
+  modulation, and the framing isn't tied to one radio chip.
+* The crates and tools follow: `moq-subghz-send`, `moq-subghz-recv`, `moq-subghz-wire`,
+  `moq-subghz-pi`, `moq-subghz-report` and `moq-subghz-publish`. The default key file is
+  `moq-subghz-key.hex`, and the publisher reads `MOQ_SUBGHZ_RELAY`.
 
 ### Changed on the air
 
 * **Frame format version 4.** Encrypted objects now carry a per-run salt, and each run encrypts
   under its own subkey derived from the pre-shared key. The first frame of each GOP carries 28
   bytes of overhead and the rest 20. Version 3 and version 4 tools refuse each other's frames.
+* **Breaking: frame format version 5.** The key-derivation label (the HKDF info string) is now
+  `moq-subghz object key v2`, and the frame header version went from 4 to 5. A sender and
+  receiver built before and after this change refuse each other's frames, and encrypted output
+  recorded before it can't be opened. Update the Pi and the laptop together. The pre-shared key
+  still works once the file is named `moq-subghz-key.hex`.
 
 ### Receiver
 

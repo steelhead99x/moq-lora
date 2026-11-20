@@ -1682,30 +1682,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "moq-subghz-publish"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytes",
- "clap",
- "hang",
- "moq-subghz-wire",
- "moq-net",
- "moq-tokio",
- "tokio",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "moq-subghz-wire"
-version = "0.1.0"
-dependencies = [
- "libc",
- "rind",
-]
-
-[[package]]
 name = "moq-net"
 version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1811,6 +1787,30 @@ dependencies = [
  "socket2",
  "thiserror",
  "tracing",
+]
+
+[[package]]
+name = "moq-subghz-publish"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "clap",
+ "hang",
+ "moq-net",
+ "moq-subghz-wire",
+ "moq-tokio",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "moq-subghz-wire"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rind",
 ]
 
 [[package]]
