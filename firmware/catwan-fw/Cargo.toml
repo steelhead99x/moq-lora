@@ -3,7 +3,7 @@ name = "catwan-fw"
 version = "0.5.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/steelhead99x/moq-lora"
+repository = "https://github.com/steelhead99x/moq-subghz"
 description = "USB-serial SX1276 link-test firmware for the Electronic Cats CatWAN USB Stick RP2040"
 
 [workspace]

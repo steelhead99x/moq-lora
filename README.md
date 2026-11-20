@@ -1,4 +1,7 @@
-# moq-lora
+# moq-subghz
+
+DIY MoQ over LoRa. Formerly named moq-lora; the LoRa radio is still the first build. The crates and
+binaries keep their `moq-lora-*` names for now.
 
 **DIY MoQ over LoRa: live video from a Raspberry Pi over a LoRa radio chip, written in Rust.**
 

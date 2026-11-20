@@ -63,7 +63,7 @@ You don't need a camera. The sender uses ffmpeg's `testsrc2` pattern by default.
 On the laptop, with Rust 1.90 or newer and ffmpeg installed:
 
 ```sh
-git clone https://github.com/steelhead99x/moq-lora && cd moq-lora
+git clone https://github.com/steelhead99x/moq-subghz && cd moq-subghz
 cargo build --release
 
 # The Pi binaries: static, no cross compiler needed
