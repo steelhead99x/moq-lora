@@ -4,7 +4,7 @@
 
 ![A frame received over the radio link, encrypted](media/frame-f350-rind-45s-3x.png)
 
-A Raspberry Pi 2 sends live H.264 video over a cheap radio chip to a USB stick on a laptop.
+A Raspberry Pi 2 sends live H.264 video over a common LoRa radio chip to a USB stick on a laptop.
 320x240 at 15 fps, about 135 ms glass to glass (capture to screen). It is not LoRaWAN, and it needs no internet,
 gateway or server.
 
@@ -22,7 +22,7 @@ Pi 2  ──▶  915 MHz FSK radio  ──▶  CatWAN USB stick  ──▶  lapt
 * **Rust from ffmpeg to the antenna.** The framing, the radio driver and the USB stick firmware
   are all Rust. Frames are encrypted with ChaCha20-Poly1305.
 
-## Built on MoQ from moq.dev
+## The MoQ model, from moq.dev
 
 The video framing follows the Media over QUIC model from **[moq.dev](https://moq.dev)**, the open
 source MoQ project and its Rust libraries. If you want to build real MoQ streaming over the
@@ -52,12 +52,12 @@ responsible for what you transmit. More in the [HOWTO](HOWTO.md#9-radio-rules).
 
 * [docs/DETAILS.md](docs/DETAILS.md): how it works, measured results, repo map and limits
 * [HOWTO.md](HOWTO.md): parts, setup and your first live picture
-* [Broadcast over MoQ, starting small](https://hikd.pro/posts/broadcast-over-moq/): the idea behind the project
+* [Broadcast over MoQ, starting small](https://hikd.ai/posts/broadcast-over-moq/): the idea behind the project
 * [CHANGELOG.md](CHANGELOG.md), [ROADMAP.md](ROADMAP.md), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md)
 
 ## Credits
 
-* **[moq.dev](https://moq.dev)**: the MoQ model and framework this project builds on, and the
+* **[moq.dev](https://moq.dev)**: the MoQ model this project follows, and the
   [IETF MoQ working group](https://datatracker.ietf.org/wg/moq/about/) behind the standard.
 * **[Rust](https://www.rust-lang.org)**: the whole project.
 * **[rind](https://github.com/kixel-ai/rind)**: the pure-Rust encryption library used for the

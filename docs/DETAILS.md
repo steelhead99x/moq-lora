@@ -140,7 +140,7 @@ Details in the [HOWTO](../HOWTO.md#9-radio-rules).
 
 ## Write-ups
 
-* [Broadcast over MoQ, starting small](https://hikd.pro/posts/broadcast-over-moq/): the idea behind
+* [Broadcast over MoQ, starting small](https://hikd.ai/posts/broadcast-over-moq/): the idea behind
   this project, with diagrams, and where it is headed.
 * [A quiet note on rind](https://hikd.pro/posts/rind-quiet-note/): a short note on the encryption library.
 
