@@ -14,6 +14,15 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   `moq-subghz-pi`, `moq-subghz-report` and `moq-subghz-publish`. The default key file is
   `moq-subghz-key.hex`, and the publisher reads `MOQ_SUBGHZ_RELAY`.
 
+### Added
+
+* **`moq-subghz-lora2015`: a 2015-style LoRa image test**, in `results/lora-2015/`. A Pi sender
+  (`lora2015-send`) sends a test picture in real LoRa mode as chunked JPEG, SSDV packets or
+  LoRaWAN-framed uplinks (no network behind them), and a host logger (`lora2015-log`) reads it on the
+  CatWAN stick and writes CSV. Built and tested without radios; the airtime table is calculated,
+  not measured. The FSK path and the existing tools are unchanged.
+  `moq-subghz-pi` gains `open_hat_raw`, the part of `open_hat` that opens spidev and GPIO.
+
 ### Changed on the air
 
 * **Frame format version 4.** Encrypted objects now carry a per-run salt, and each run encrypts
