@@ -1,7 +1,8 @@
 //! moq-lora-recv: CatWAN USB serial (`R <t> <rssi> <snr> <hex>` lines from the sx1276-rs
 //! catwan-fw) -> reassembly + XOR FEC -> MoQ group gate -> H.264 Annex-B to
 //! (a) ffplay for live display, (b) a recording, (c) an ffmpeg decoder whose output
-//! frames are scanned for the burned-in barcode = capture->decoded latency.
+//! frames are scanned for the burned-in barcode = capture->decoded latency, and
+//! (d) optionally `moq-lora-publish`, which republishes the objects as real MoQ.
 #[cfg(target_os = "linux")]
 mod radio;
 
@@ -75,6 +76,16 @@ struct Args {
     /// Stall threshold, ms (gap between consecutive displayed frames)
     #[arg(long, default_value_t = 250.0)]
     stall_ms: f64,
+    /// Republish the delivered objects as a real MoQ broadcast on this relay URL, through
+    /// `moq-lora-publish` (see docs/MOQ.md). E.g. http://localhost:4443/anon
+    #[arg(long)]
+    publish: Option<String>,
+    /// Broadcast name for --publish
+    #[arg(long, default_value = "moq-lora")]
+    publish_name: String,
+    /// The moq-lora-publish binary for --publish
+    #[arg(long, default_value = "moq-lora-publish")]
+    publish_bin: String,
 }
 
 fn unix_us() -> u64 {
@@ -502,6 +513,21 @@ fn main() -> Result<()> {
     } else {
         None
     };
+    // Same objects the decoder gets, one record each. stderr stays on the terminal so
+    // the publisher's connection errors are visible.
+    let mut publish = match &a.publish {
+        Some(url) => {
+            let mut c = Command::new(&a.publish_bin)
+                .args(["--url", url, "--name", &a.publish_name, "--size", &a.size])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .spawn()
+                .with_context(|| format!("spawn {}", a.publish_bin))?;
+            let si = c.stdin.take().unwrap();
+            Some(Sink::new(si, Some(c)))
+        }
+        None => None,
+    };
     let mut dec_th = None;
     let mut dec = if a.decode {
         let mut c = Command::new("ffmpeg")
@@ -640,6 +666,17 @@ fn main() -> Result<()> {
                     if let Some(s) = &dec {
                         s.send(&live);
                     }
+                    if let Some(s) = &publish {
+                        let r = moq_lora_wire::objstream::Record {
+                            group,
+                            obj,
+                            key: oh.key,
+                            frame_no: oh.frame_no,
+                            cap_us: oh.cap_us,
+                            payload: au.to_vec(),
+                        };
+                        s.send(&r.encode());
+                    }
                 }
             }
             Event::Lost {
@@ -741,6 +778,7 @@ fn main() -> Result<()> {
         r.flush()?;
     }
     let play_dropped = play.as_mut().map(|s| s.close(Duration::from_secs(3)));
+    let publish_dropped = publish.as_mut().map(|s| s.close(Duration::from_secs(5)));
     let mut decode_dropped = None;
     let (mut dtimes, dlat_t, unread) = if let Some(mut s) = dec.take() {
         decode_dropped = Some(s.close(Duration::from_secs(5)));
@@ -782,7 +820,7 @@ fn main() -> Result<()> {
         1.0 - frames_delivered as f64 / frames_expected as f64
     };
     let s = format!(
-        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frames_late\":{},\"radio_frames_stray\":{},\"radio_frames_stale\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"frames_delivered\":{frames_delivered},\"frame_no_rejected\":{},\"video_frame_loss\":{},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"catwan\":\"{}\",\"decoded_flushed_at_end\":{flushed},\"cpu_pct_recv\":{:.1},\"cpu_pct_children\":{:.1},\"cpu_cores\":{},\"port_closed\":{port_closed},\"play_dropped_aus\":{},\"decode_dropped_aus\":{}}}",
+        "{{\"role\":\"recv\",\"profile\":\"{}\",\"span_s\":{span:.2},\"radio_frames_ok\":{},\"radio_frames_missing\":{},\"radio_frames_bad\":{},\"radio_frames_late\":{},\"radio_frames_stray\":{},\"radio_frames_stale\":{},\"radio_frame_loss\":{:.5},\"rx_err_lines\":{rx_err},\"fec_recovered\":{},\"objects_ok\":{ok_objs},\"objects_lost\":{lost_objs},\"objects_delivered\":{},\"frames_expected\":{frames_expected},\"frames_delivered\":{frames_delivered},\"frame_no_rejected\":{},\"video_frame_loss\":{},\"groups_cut\":{},\"objects_skipped_by_gate\":{},\"delivered_video_bps\":{:.0},\"received_video_bps\":{:.0},\"obj_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"decoded_frames\":{},\"barcode_unread\":{unread},\"g2g_lat_ms\":{{\"p50\":{},\"p95\":{},\"max\":{}}},\"stalls_obj\":{ost},\"worst_gap_obj_ms\":{oworst:.0},\"stalls_decoded\":{dst},\"worst_gap_decoded_ms\":{dworst:.0},\"stall_threshold_ms\":{},\"rssi_mean\":{},\"clock_offset_ms\":{},\"cipher\":\"{}\",\"auth_fail\":{auth_fail},\"open_us_per_object\":{:.1},\"radio_goodput_bps\":{:.0},\"catwan\":\"{}\",\"decoded_flushed_at_end\":{flushed},\"cpu_pct_recv\":{:.1},\"cpu_pct_children\":{:.1},\"cpu_cores\":{},\"port_closed\":{port_closed},\"play_dropped_aus\":{},\"decode_dropped_aus\":{},\"publish_dropped_objects\":{}}}",
         a.profile, re.frames_ok, re.frames_missing, re.frames_bad, re.frames_late, re.frames_stray, re.frames_stale,
         re.frames_missing as f64 / (re.frames_ok + re.frames_missing).max(1) as f64,
         re.fec_recovered, obj_times.len(),
@@ -799,7 +837,7 @@ fn main() -> Result<()> {
         json_escape(&stats_line),
         100.0 * cpu_s(libc::RUSAGE_SELF) / wall, 100.0 * cpu_s(libc::RUSAGE_CHILDREN) / wall,
         std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
-        opt(play_dropped), opt(decode_dropped),
+        opt(play_dropped), opt(decode_dropped), opt(publish_dropped),
     );
     std::fs::write(format!("{}/summary.json", a.out), &s)?;
     println!("{s}");
