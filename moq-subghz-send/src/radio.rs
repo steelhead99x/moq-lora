@@ -1,6 +1,6 @@
-//! SX1276 on the Dragino HAT, FSK TX only. The HAT glue is in `moq-lora-pi`.
+//! SX1276 on the Dragino HAT, FSK TX only. The HAT glue is in `moq-subghz-pi`.
 use anyhow::{bail, Result};
-use moq_lora_pi::{open_hat, sx_err, Hat};
+use moq_subghz_pi::{open_hat, sx_err, Hat};
 use sx1276::fsk::FskConfig;
 
 pub struct Radio {

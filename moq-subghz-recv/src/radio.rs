@@ -1,7 +1,7 @@
 //! SX1276 on the Dragino HAT, FSK RX (reverse direction: CatWAN -> Pi). The HAT glue is
-//! in `moq-lora-pi`.
+//! in `moq-subghz-pi`.
 use anyhow::Result;
-use moq_lora_pi::{open_hat, sx_err, Hat};
+use moq_subghz_pi::{open_hat, sx_err, Hat};
 use sx1276::fsk::FskConfig;
 
 pub struct Radio {

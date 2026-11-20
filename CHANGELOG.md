@@ -5,11 +5,19 @@
 Changes since the runs in `results/video/` were measured (2026-11-17). None of these has been
 run on the radios yet, only through the no-radio loopback and the unit tests.
 
+### Renamed
+
+* **The project is now moq-subghz** (was moq-lora). The crates and tools are `moq-subghz-send`,
+  `moq-subghz-recv`, `moq-subghz-wire`, `moq-subghz-pi` and `moq-subghz-report`. It never used
+  LoRa modulation, and the framing isn't tied to one radio chip.
+
 ### Changed on the air
 
 * **Frame format version 4.** Encrypted objects now carry a per-run salt, and each run encrypts
   under its own subkey derived from the pre-shared key. The first frame of each GOP carries 28
   bytes of overhead and the rest 20. Version 3 and version 4 tools refuse each other's frames.
+* The key-derivation label was renamed with the project, so encrypted version 4 output from before
+  the rename can't be opened. No such output was published.
 
 ### Receiver
 
@@ -27,7 +35,7 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   its video source stalls.
 * Key files must be readable only by their owner.
 * The bench scripts quote key paths and pass the receiver's key separately.
-* The Pi radio setup code is shared by the sender and receiver in a new `moq-lora-pi` crate.
+* The Pi radio setup code is shared by the sender and receiver in a new `moq-subghz-pi` crate.
 
 ### Docs
 

@@ -12,7 +12,7 @@ runs/
 *.ts
 
 # pre-shared keys. Referenced by path only; never commit one.
-moq-lora-key.hex
+moq-subghz-key.hex
 *.key
 key.hex
 

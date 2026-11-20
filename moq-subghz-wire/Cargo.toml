@@ -1,5 +1,5 @@
 [package]
-name = "moq-lora-wire"
+name = "moq-subghz-wire"
 version = "0.1.0"
 description = "MoQ-style object/group framing, XOR-parity FEC and H.264 access-unit splitting for <=255 B radio frames"
 edition.workspace = true

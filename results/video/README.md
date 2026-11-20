@@ -58,31 +58,31 @@ your own ssh host, serial device, and key file (mode 0600, never commit it):
 ```sh
 export PI=pi                     # ssh host of the Pi
 export PORT=/dev/cu.usbmodemXXX  # macOS CatWAN port; Linux is typically /dev/ttyACM0
-export LKEY="$HOME/moq-lora-key.hex"
+export LKEY="$HOME/moq-subghz-key.hex"
 export PKEY="$LKEY"              # path of that same file on the Pi
 ( umask 077; openssl rand -hex 32 > "$LKEY" )
-scp "$LKEY" "$PI:moq-lora-key.hex"
+scp "$LKEY" "$PI:moq-subghz-key.hex"
 ```
 
 Pi -> Mac (`scripts/run2.sh NAME PROFILE 330 ...`), e.g. f300_on:
 
 ```sh
 # laptop: clock offset, then receiver
-moq-lora-recv --clock-check "$PI"                       # -> remote_minus_local_ms = OFF
-moq-lora-recv --port "$PORT" --profile 300000:100000:6 --secs 340 --out runs/f300_on \
+moq-subghz-recv --clock-check "$PI"                       # -> remote_minus_local_ms = OFF
+moq-subghz-recv --port "$PORT" --profile 300000:100000:6 --secs 340 --out runs/f300_on \
     --play --decode --raw-log --clock-offset-ms=$OFF --key-file "$LKEY"
 # Pi (3 s later)
-./moq-lora-send --profile 300000:100000:6 --secs 330 --log /tmp/f300_on_send.jsonl --i-have-an-antenna \
+./moq-subghz-send --profile 300000:100000:6 --secs 330 --log /tmp/f300_on_send.jsonl --i-have-an-antenna \
     --fec-k 8 --key-file "$PKEY"
 ```
 
 Mac -> Pi (`scripts/rev.sh`), e.g. r350_off (12 B preamble at 300k, 14 B at 350k):
 
 ```sh
-moq-lora-recv --clock-check "$PI"                       # X = Pi minus laptop; the Pi receiver gets -X
-ssh "$PI" "cd ~/moq-lora && ./moq-lora-recv --radio --profile 350000:100000:14:x --secs 340 \
+moq-subghz-recv --clock-check "$PI"                       # X = Pi minus laptop; the Pi receiver gets -X
+ssh "$PI" "cd ~/moq-subghz && ./moq-subghz-recv --radio --profile 350000:100000:14:x --secs 340 \
     --out /tmp/r350_off --decode --raw-log --clock-offset-ms=-$X"
-moq-lora-send --catwan "$PORT" --profile 350000:100000:14:x --secs 330 \
+moq-subghz-send --catwan "$PORT" --profile 350000:100000:14:x --secs 330 \
     --log runs/r350_off.send.jsonl --i-have-an-antenna --fec-k 8
 ```
 
@@ -92,7 +92,7 @@ Forward profiles: `300000:100000:6`, `350000:100000:6:x`. A clock check ran ever
 Table:
 
 ```sh
-cargo run --release -p moq-lora-report -- --clock-log clock_log.jsonl \
+cargo run --release -p moq-subghz-report -- --clock-log clock_log.jsonl \
     f300_off f300_on f350_off f350_on r300_off r300_on r350_off r350_on > table.md
 ```
 

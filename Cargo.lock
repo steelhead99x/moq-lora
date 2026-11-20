@@ -555,7 +555,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "moq-lora-pi"
+name = "moq-subghz-pi"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -566,19 +566,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "moq-lora-recv"
+name = "moq-subghz-recv"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "libc",
- "moq-lora-pi",
- "moq-lora-wire",
+ "moq-subghz-pi",
+ "moq-subghz-wire",
  "sx1276",
 ]
 
 [[package]]
-name = "moq-lora-report"
+name = "moq-subghz-report"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -587,19 +587,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "moq-lora-send"
+name = "moq-subghz-send"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "libc",
- "moq-lora-pi",
- "moq-lora-wire",
+ "moq-subghz-pi",
+ "moq-subghz-wire",
  "sx1276",
 ]
 
 [[package]]
-name = "moq-lora-wire"
+name = "moq-subghz-wire"
 version = "0.1.0"
 dependencies = [
  "libc",

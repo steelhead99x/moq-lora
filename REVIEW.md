@@ -5,8 +5,8 @@ fixes merged. File and line references (`lib.rs:494`) point at the tree as it wa
 have drifted since; the function and type names are the reliable pointers. Sections marked
 Fixed describe the code on `main`.
 
-Review of the `video-demo` tree for a public release: `moq-lora-wire`, `moq-lora-send`,
-`moq-lora-recv`, `moq-lora-report`, `vendor/sx1276`, `firmware/catwan-fw`, and `scripts/`.
+Review of the `video-demo` tree for a public release: `moq-subghz-wire`, `moq-subghz-send`,
+`moq-subghz-recv`, `moq-subghz-report`, `vendor/sx1276`, `firmware/catwan-fw`, and `scripts/`.
 
 No radio hardware is attached to this environment. Nothing here was checked on a Pi or a
 CatWAN stick, and the 330 s numbers in `results/video/` were not regenerated. Changes that
@@ -14,8 +14,8 @@ would alter on-air framing, FEC, pacing, or loss accounting were left in place a
 below. What was fixed is covered by unit tests (`cargo test --all-targets` on the
 workspace, plus the sx1276 driver tests).
 
-Host build, clippy, and tests were run with rustc 1.90.0. `moq-lora-send` and
-`moq-lora-recv` were also built for `armv7-unknown-linux-musleabihf` (rust-lld, static)
+Host build, clippy, and tests were run with rustc 1.90.0. `moq-subghz-send` and
+`moq-subghz-recv` were also built for `armv7-unknown-linux-musleabihf` (rust-lld, static)
 and `armv7-unknown-linux-gnueabihf` (`arm-linux-gnueabihf-gcc`, dynamic). The firmware
 was built and clippy-clean for `thumbv6m-none-eabi`. `firmware/catwan-fw-v5.uf2` was
 not replaced.
@@ -33,8 +33,8 @@ need a protocol or firmware change that would invalidate the measured runs.
 
 `firmware/catwan-fw/src/main.rs:232` and `:259` clamp `dbm` to `2..=17` for both the
 `L` and `F` commands and program the frequency they are given. There is no check for
-902-928 MHz and no refusal of 925.0 MHz. `moq-lora-send` (`main.rs:273` and `:276`, before it opens the stick) and
-`moq-lora-recv` (`main.rs:313` hard-codes 5 dBm on the `F` command)
+902-928 MHz and no refusal of 925.0 MHz. `moq-subghz-send` (`main.rs:273` and `:276`, before it opens the stick) and
+`moq-subghz-recv` (`main.rs:313` hard-codes 5 dBm on the `F` command)
 enforce the limits only when the host tools are used. A raw serial session can key the
 stick at +17 dBm on an arbitrary frequency.
 
@@ -45,7 +45,7 @@ README and HOWTO now say the same thing in the RF notes.
 
 ### Replayed frames. Mostly fixed; long replays deferred.
 
-`Reassembler` (`moq-lora-wire/src/lib.rs`) tracks the newest object it has placed.
+`Reassembler` (`moq-subghz-wire/src/lib.rs`) tracks the newest object it has placed.
 Frames for an object behind it are counted as `radio_frames_stale` and never
 reassembled, so a replayed old object 0 no longer reaches `GroupGate` as a new group
 and a replayed frame no longer finalizes the object in progress. A frame far ahead is
@@ -69,7 +69,7 @@ Closing these needs authenticated sequence numbers (see the next section).
 
 ### Radio headers and FEC are outside the AEAD. By design.
 
-`moq-lora-wire/src/seal.rs` binds only `group` and `obj` as AAD; the nonce is built
+`moq-subghz-wire/src/seal.rs` binds only `group` and `obj` as AAD; the nonce is built
 from the run's salt, `group` and `obj`. Sequence number, fragment index, `nfrag`, the
 parity bit, `k`, and `objlen` are clear and unauthenticated. What that lets an on-path attacker do,
 with `--key-file`:
@@ -78,7 +78,7 @@ with `--key-file`:
   fails `open` and is counted as `auth_fail`, a lost object. That is denial of service,
   which jamming the channel achieves anyway.
 * Skew the loss statistics: with two or more consecutive forged frames far ahead it can
-  fake a gap (one frame can add at most `SEQ_STEP - 1`; see `moq-lora-wire/src/lib.rs`).
+  fake a gap (one frame can add at most `SEQ_STEP - 1`; see `moq-subghz-wire/src/lib.rs`).
   The video itself is unaffected.
 
 It cannot read the picture or make altered content authenticate: any change to how
@@ -110,7 +110,7 @@ no packet is stored (`1..=0` used to panic). That does not change a successful r
 nonce repeats under one key. Each run used to draw a random 32-bit session id as the
 nonce prefix, so two runs under one key collided after about 2^16 runs. Now each run
 draws a 96-bit salt and encrypts under a subkey derived from the key and the salt
-(HKDF-SHA256, `moq-lora-wire/src/seal.rs`); object 0 of each group carries the salt in
+(HKDF-SHA256, `moq-subghz-wire/src/seal.rs`); object 0 of each group carries the salt in
 the clear, other objects its first 4 bytes. The sender draws a new salt when the
 16-bit group id wraps. Reusing a keystream now needs two equal 96-bit salts. The
 receiver caches a salt's subkey only after an object under it authenticates, so a
@@ -126,7 +126,7 @@ wipes the hex file bytes and the temporary key after `Key::new`.
 
 ### A backward sequence number rewinds loss accounting. Deferred.
 
-`moq-lora-wire/src/lib.rs:494`. A duplicate (`d == 0`) is ignored. A gap with
+`moq-subghz-wire/src/lib.rs:494`. A duplicate (`d == 0`) is ignored. A gap with
 `d < 0x8000` counts as loss. Any other delta, including a single step backwards, still
 updates `last_seq` and is fed to the reassembler. One old or hostile sequence number
 then makes the next honest frame look like a large gap. Ignoring backward sequence
@@ -135,7 +135,7 @@ completes an object. The measured link does not reorder. Not changed.
 
 ### The sender's TX queue is unbounded. Deferred.
 
-`moq-lora-send/src/main.rs` pushes every object onto the queue and only drops stale
+`moq-subghz-send/src/main.rs` pushes every object onto the queue and only drops stale
 groups when the radio thread reaches them. At 180 kbit/s into a 300 kbit/s radio the
 queue stays small (the runs recorded `max_queue_frames` around 50). A faster encoder
 or a stalled radio grows it without a cap. A cap would drop groups the current code
@@ -143,19 +143,19 @@ still sends. Not changed.
 
 ### Object id 255 starts a new group that may not be a keyframe. Fixed.
 
-`advance` in `moq-lora-send/src/main.rs` starts a group only on a keyframe; an encoder
+`advance` in `moq-subghz-send/src/main.rs` starts a group only on a keyframe; an encoder
 that sends more than 256 frames without one stops the run (`gop_overrun`) instead of
 handing the decoder a P-frame as a random access point.
 
 ### If the capture queue is empty, the object is stamped `frame_no = u32::MAX`. Deferred.
 
-`moq-lora-send/src/main.rs:561`. An extra access unit from the encoder is still sent,
+`moq-subghz-send/src/main.rs:561`. An extra access unit from the encoder is still sent,
 with capture time set to "now". It shows up in the logs as a bogus frame number. The
 measured runs have `captured == objects`. Not changed.
 
 ### A slow player drops access units. Deferred.
 
-`moq-lora-recv/src/main.rs:135`. `try_send` into a 256-deep channel discards the
+`moq-subghz-recv/src/main.rs:135`. `try_send` into a 256-deep channel discards the
 access unit when ffplay or the decoder is behind. That is intentional so the radio
 loop does not block. It is not counted. Not changed.
 
@@ -176,7 +176,7 @@ and was not touched.
 
 ### Key file mode is checked, then the file is read. Fixed for the check; TOCTOU deferred.
 
-`read_key_file` (`moq-lora-wire/src/seal.rs`). On Unix the file must be a regular file with no
+`read_key_file` (`moq-subghz-wire/src/seal.rs`). On Unix the file must be a regular file with no
 group/other permission bits. A mode change between `metadata` and `read` is not
 closed. Good enough for a pre-shared key on a single-user bench machine.
 
@@ -193,30 +193,30 @@ reverse path 4 s. Folding them together would be a new harness, not a cleanup.
 
 ### `fn seal` and `mod seal` shared a name. Fixed.
 
-`moq-lora-wire/src/lib.rs` had both `pub mod seal` (AEAD) and `pub fn seal` (CRC-16).
+`moq-subghz-wire/src/lib.rs` had both `pub mod seal` (AEAD) and `pub fn seal` (CRC-16).
 The CRC function is now `write_crc`, which says what it does.
 
 ### The Pi GPIO glue was copied twice. Fixed.
 
-`moq-lora-send/src/radio.rs` and `moq-lora-recv/src/radio.rs` duplicated `CdevIrq` and
-`Radio::open`. Both now come from `moq-lora-pi` (`CdevIrq`, `Hat`, `open_hat`, `sx_err`), moved verbatim:
+`moq-subghz-send/src/radio.rs` and `moq-subghz-recv/src/radio.rs` duplicated `CdevIrq` and
+`Radio::open`. Both now come from `moq-subghz-pi` (`CdevIrq`, `Hat`, `open_hat`, `sx_err`), moved verbatim:
 the same register writes in the same order. Each binary keeps only its own TX or RX
 methods, so the TX path is the code it was.
 
 ### `localtime_r` failure is ignored. Deferred.
 
-`moq-lora-send/src/main.rs` `local_clock`. A failure leaves the zeroed `tm`, so the
+`moq-subghz-send/src/main.rs` `local_clock`. A failure leaves the zeroed `tm`, so the
 burned-in clock reads `00:00:00`. The barcode does not use that string. Not changed.
 
 ### CatWAN TX formats each byte with `format!("{:02x}")`. Deferred.
 
-`moq-lora-send` `Link::send` for `Catwan`. It allocates per byte. Backpressure is the
+`moq-subghz-send` `Link::send` for `Catwan`. It allocates per byte. Backpressure is the
 stick's 12-frame queue, not this formatting. Changing it could change host CPU during
 TX. Not changed.
 
 ### Report tool trusts the JSON it reads. Partially fixed.
 
-`moq-lora-report/src/main.rs:92` no longer divides by zero when two clock samples
+`moq-subghz-report/src/main.rs:92` no longer divides by zero when two clock samples
 share a timestamp, and a trailing `--clock-log` without a path is an error (`:107`)
 instead of a panic. `pct` no longer panics on NaN (`:45`). A run directory that is
 not a directory still hits `file_name()` and prints an empty name rather than
@@ -224,7 +224,7 @@ panicking. The tool does not validate that `summary.json` came from this program
 
 ### Window title said "LoRa". Fixed.
 
-`moq-lora-recv` ffplay title is now `SX1276 FSK live video (moq-lora)`. The link is
+`moq-subghz-recv` ffplay title is now `SX1276 FSK live video (moq-subghz)`. The link is
 FSK. The README's "best known as the LoRa chip" sentence is about the silicon, and
 was left.
 
@@ -232,7 +232,7 @@ was left.
 
 | what | where | note |
 |---|---|---|
-| Reject frames longer than 255 before the CRC copy | `moq-lora-wire/src/lib.rs:178` | a hostile replay line used to allocate the whole buffer |
+| Reject frames longer than 255 before the CRC copy | `moq-subghz-wire/src/lib.rs:178` | a hostile replay line used to allocate the whole buffer |
 | `chunk_size` / `chunk_len` do not divide by zero or underflow | `lib.rs:220` | property test over every legal object length |
 | FEC recovery does not `unwrap` a missing chunk | `lib.rs:407` | honest single-erasure repair is unchanged |
 | Serial and replay lines capped at 1024 bytes | `lib.rs:48`, recv `main.rs:280` and `:367`, send `main.rs:152` | real `R` lines are about 550 bytes |
@@ -242,10 +242,10 @@ was left.
 | Profile parser rejects bitrate 0 and a suffix other than `x` | `lib.rs:95` | `0:...` used to panic in the airtime division |
 | Per-run subkeys from a 96-bit salt replace the 32-bit session id | `seal.rs` | no birthday bound at 2^16 runs |
 | Empty `FskLongRx::payload` does not panic | `vendor/sx1276/src/lib.rs:169` | |
-| Stats line from the stick is JSON-escaped | `moq-lora-recv/src/main.rs:176` | normal `OK S ...` lines are unchanged |
+| Stats line from the stick is JSON-escaped | `moq-subghz-recv/src/main.rs:176` | normal `OK S ...` lines are unchanged |
 | `panic = "abort"` on the firmware profiles | `firmware/catwan-fw/Cargo.toml` | thumbv6m cannot unwind; rustc 1.90 would not link without it |
 
-Tests for the wire fixes are in `moq-lora-wire` (`hostile_frames_do_not_panic`,
+Tests for the wire fixes are in `moq-subghz-wire` (`hostile_frames_do_not_panic`,
 `chunk_lengths_sum_to_objlen`, `read_line_limited_caps_and_keeps_short_lines`,
 `key_file_mode_and_roundtrip`, and the existing FEC round-trips).
 
@@ -258,7 +258,7 @@ Tests for the wire fixes are in `moq-lora-wire` (`hostile_frames_do_not_panic`,
 * Tag check is rind's constant-time compare, not a `==` in this repo.
 * Key material is a file path, not an argument. The tools refuse a group- or
   world-readable file. No key file is in git, and `.gitignore` ignores
-  `moq-lora-key.hex` and `*.key`.
+  `moq-subghz-key.hex` and `*.key`.
 * There is no key exchange and no replay cache. Both are documented in HOWTO and
   ROADMAP.
 

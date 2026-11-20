@@ -1,4 +1,4 @@
-//! moq-lora-send: live video -> MoQ-style objects/groups -> SX1276 FSK frames.
+//! moq-subghz-send: live video -> MoQ-style objects/groups -> SX1276 FSK frames.
 //!
 //! Pipeline (all glue in Rust, ffmpeg only as source and encoder):
 //!   source ffmpeg (-re, rawvideo yuv420p) -> [Rust: stamp capture time, burn clock + barcode]
@@ -10,7 +10,7 @@ mod radio;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use moq_lora_wire::{
+use moq_subghz_wire::{
     annexb, parse_fsk_profile, read_line_limited, seal, stamp, Fragmenter, Line, ObjHdr,
     MAX_SERIAL_LINE,
 };
@@ -95,7 +95,7 @@ fn unix_us() -> u64 {
         .as_micros() as u64
 }
 
-fn parse_profile(s: &str) -> Result<moq_lora_wire::FskProfile> {
+fn parse_profile(s: &str) -> Result<moq_subghz_wire::FskProfile> {
     parse_fsk_profile(s).map_err(|e| anyhow::anyhow!(e))
 }
 
@@ -213,7 +213,7 @@ fn write_deadline(f: &mut std::fs::File, mut buf: &[u8], timeout: Duration) -> R
 fn open_catwan(
     port: &str,
     freq_hz: u32,
-    p: &moq_lora_wire::FskProfile,
+    p: &moq_subghz_wire::FskProfile,
     power: i8,
 ) -> Result<(std::fs::File, Arc<AtomicU64>)> {
     use std::os::unix::fs::OpenOptionsExt;
@@ -959,10 +959,10 @@ fn main() -> Result<()> {
         a.profile, a.power, a.size, a.fps, a.gop, a.encoder, a.bitrate, a.fec_k, a.min_frame, au_bytes as f64 * 8.0 / wall, st.frames, st.bytes,
         100.0 * busy / wall, st.bytes as f64 * 8.0 / wall, st.objects_dropped, st.groups_dropped, st.tx_errors, st.max_queue_frames, qdrops.objects, qdrops.groups,
         sealer.as_ref().map(|x| x.cipher.name()).unwrap_or("none"),
-        moq_lora_wire::OBJ_HDR_LEN,
+        moq_subghz_wire::OBJ_HDR_LEN,
         aead_bytes as f64 / sealed.max(1) as f64,
-        st.frames as f64 * moq_lora_wire::HDR_LEN as f64 / objs,
-        (st.bytes as f64 - st.frames as f64 * moq_lora_wire::HDR_LEN as f64 - obj_bytes as f64) / objs,
+        st.frames as f64 * moq_subghz_wire::HDR_LEN as f64 / objs,
+        (st.bytes as f64 - st.frames as f64 * moq_subghz_wire::HDR_LEN as f64 - obj_bytes as f64) / objs,
         (st.bytes as f64 - au_bytes as f64) / objs,
         1e6 * seal_s / sealed.max(1) as f64,
         100.0 * cpu_self / wall, 100.0 * cpu_child / wall, 100.0 * (cpu_self + cpu_child) / wall,
