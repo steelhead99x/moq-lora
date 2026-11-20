@@ -1,0 +1,29 @@
+[package]
+name = "moq-lora-publish"
+version = "0.1.0"
+description = "Laptop side: republish the objects moq-lora-recv recovers as a real MoQ broadcast on a moq.dev relay or moq.pro"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+# moq.dev's crates need 1.91; the radio workspace stays on 1.90.
+rust-version = "1.91"
+repository = "https://github.com/steelhead99x/moq-subghz"
+publish = false
+
+[dependencies]
+moq-lora-wire = { path = "../moq-lora-wire" }
+anyhow = "1"
+bytes = "1"
+clap = { version = "4", features = ["derive", "env"] }
+hang = "0.21.24"
+moq-net = "0.3.23"
+# ring avoids aws-lc-rs and its cmake build.
+moq-tokio = { version = "0.19.37", default-features = false, features = ["noq", "ring"] }
+tokio = { version = "1", features = ["io-util", "io-std", "macros", "rt-multi-thread", "signal", "time", "fs"] }
+tracing = "0.1"
+url = "2"
+
+[dev-dependencies]
+moq-tokio = { version = "0.19.37", default-features = false, features = ["noq", "ring"] }
+
+# Standalone: not a member of the radio workspace.
+[workspace]

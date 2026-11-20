@@ -42,6 +42,22 @@ jobs:
           cargo clippy --all-targets -- -D warnings
           cargo test --all-targets
 
+  moq-publish:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # moq.dev's crates need a newer Rust than the radio workspace's 1.90.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: fmt, clippy, test (publishes through an in-process MoQ relay)
+        working-directory: moq-lora-publish
+        run: |
+          cargo fmt --all --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --all-targets --locked
+
   armv7:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest

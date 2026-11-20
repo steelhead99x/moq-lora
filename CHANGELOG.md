@@ -27,6 +27,15 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 * Loss accounting separates late, stray and stale frames.
 * The receiver keeps every decoded frame, including the first GOP.
 
+### Republish to MoQ
+
+* New `moq-lora-publish` crate: republishes the received groups and objects 1:1 as a real MoQ
+  broadcast (hang format) through moq.dev's `moq-net`, `moq-tokio` and `hang` crates, so a
+  moq.dev relay or moq.pro can fan it out and the moq.dev web player can show it. Separate
+  crate (Rust 1.91+), so the Pi binaries are unchanged. See [docs/MOQ.md](docs/MOQ.md).
+* `moq-lora-recv --publish URL` feeds it the objects that pass the group gate.
+  `summary.json` gains `publish_dropped_objects`.
+
 ### Sender and tools
 
 * The sender stops if the encoder sends more than 256 frames without a keyframe, and stops when
