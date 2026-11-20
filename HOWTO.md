@@ -2,7 +2,7 @@
 
 From a bare Raspberry Pi 2 and a USB radio stick to a live picture in `ffplay`. Budget an hour.
 
-Just want to see it work? The [quick start in the README](README.md#quick-start-no-radio-needed)
+Just want to see it work? The [quick start in the README](README.md#try-it-no-radio-needed)
 runs the whole pipeline through a file, with no radios.
 
 > **Before you transmit:** read [section 9](#9-radio-rules). Short version: 915 MHz, 3 mW,
