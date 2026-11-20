@@ -1,4 +1,7 @@
-# moq-lora
+# moq-subghz
+
+DIY MoQ over LoRa. Formerly named moq-lora; the LoRa radio is still the first build. The crates and
+binaries keep their `moq-lora-*` names for now.
 
 **Live H.264 over a LoRa radio chip, from a 2015 Raspberry Pi 2. 320x240, 15 fps, ~135 ms glass-to-glass.**
 
