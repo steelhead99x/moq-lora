@@ -8,8 +8,8 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 ### Renamed
 
 * **The project is now moq-subghz** (was moq-lora). The crates and tools are `moq-subghz-send`,
-  `moq-subghz-recv`, `moq-subghz-wire`, `moq-subghz-pi` and `moq-subghz-report`. It never used
-  LoRa modulation, and the framing isn't tied to one radio chip.
+  `moq-subghz-recv`, `moq-subghz-wire`, `moq-subghz-pi` and `moq-subghz-report`. The video never
+  went over LoRa modulation, and the framing isn't tied to one radio chip.
 
 ### Changed on the air
 
@@ -17,7 +17,9 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   under its own subkey derived from the pre-shared key. The first frame of each GOP carries 28
   bytes of overhead and the rest 20. Version 3 and version 4 tools refuse each other's frames.
 * The key-derivation label was renamed with the project, so encrypted version 4 output from before
-  the rename can't be opened. No such output was published.
+  the rename can't be opened, and a sender and receiver built on either side of the rename
+  can't read each other's encrypted frames (they show up as `auth_fail`). No such output was
+  published. Rebuild both ends together.
 
 ### Receiver
 

@@ -12,8 +12,8 @@ gadgets. LoRa itself is slow (tens of kbit/s), but the same chip has a plain FSK
 300 kbit/s. That's enough for a small, low-bitrate H.264 stream, so this project sends one.
 Everything between ffmpeg and the antenna is Rust.
 
-The project was called moq-lora until November 2026. It never used LoRa modulation, and the
-framing isn't tied to one chip, so it is now named after the band.
+The project was called moq-lora until November 2026. The video never went over LoRa modulation,
+and the framing isn't tied to one chip, so it is now named after the band.
 
 ## The idea, for video people
 
