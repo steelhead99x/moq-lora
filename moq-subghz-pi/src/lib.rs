@@ -63,9 +63,9 @@ pub fn sx_err<E: std::fmt::Debug>(err: sx1276::Error<E>) -> anyhow::Error {
     anyhow::anyhow!("sx1276: {err:?}")
 }
 
-/// Open the HAT and configure it for FSK at `freq_hz` with `cfg`, in standby, PA_BOOST
-/// at `power` dBm.
-pub fn open_hat(spi_hz: u32, freq_hz: u32, cfg: &FskConfig, power: i8) -> Result<Hat> {
+/// Open spidev and the HAT's GPIO lines. The radio is not touched: no reset, no register
+/// access, so the caller picks FSK or LoRa.
+pub fn open_hat_raw(spi_hz: u32) -> Result<Hat> {
     let mut bus = SpidevBus::open("/dev/spidev0.0").context("open spidev")?;
     let mut o = SpidevOptions::new();
     o.bits_per_word(8).max_speed_hz(spi_hz);
@@ -94,7 +94,13 @@ pub fn open_hat(spi_hz: u32, freq_hz: u32, cfg: &FskConfig, power: i8) -> Result
     )?;
     let spi = ExclusiveDevice::new(bus, CdevPin::new(nss)?, Delay)
         .map_err(|x| anyhow::anyhow!("NSS: {x}"))?;
-    let mut r = Sx1276::new(spi, CdevPin::new(rst)?, CdevIrq { ev }, Delay);
+    Ok(Sx1276::new(spi, CdevPin::new(rst)?, CdevIrq { ev }, Delay))
+}
+
+/// Open the HAT and configure it for FSK at `freq_hz` with `cfg`, in standby, PA_BOOST
+/// at `power` dBm.
+pub fn open_hat(spi_hz: u32, freq_hz: u32, cfg: &FskConfig, power: i8) -> Result<Hat> {
+    let mut r = open_hat_raw(spi_hz)?;
     r.init(freq_hz, &sx1276::LoRaConfig::default())
         .map_err(sx_err)?;
     r.enter_fsk_mode().map_err(sx_err)?;
