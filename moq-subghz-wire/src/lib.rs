@@ -23,6 +23,7 @@
 //! Object payload: 17-byte [`ObjHdr`] followed by the H.264 Annex-B access unit.
 
 pub mod annexb;
+pub mod objstream;
 pub mod seal;
 pub mod stamp;
 

@@ -2,7 +2,7 @@
 
 From a bare Raspberry Pi 2 and a USB radio stick to a live picture in `ffplay`. Budget an hour.
 
-Just want to see it work? The [quick start in the README](README.md#quick-start-no-radio-needed)
+Just want to see it work? The [quick start in the README](README.md#try-it-no-radio-needed)
 runs the whole pipeline through a file, with no radios.
 
 > **Before you transmit:** read [section 9](#9-radio-rules). Short version: 915 MHz, 3 mW,
@@ -202,6 +202,9 @@ More detail is in [scripts/README.md](scripts/README.md). The meaning of each co
   keep checking, which uses a whole core. Expect more loss than the forward direction.
 * **A camera.** `--src /dev/video0` should work but is untested. The clock and barcode are drawn
   onto whatever the source gives, so latency measurement still works.
+* **Watch it over the internet.** Add `--publish URL` to the receiver to republish the video as a
+  real MoQ broadcast on a [moq.dev](https://moq.dev) relay or [moq.pro](https://moq.pro), and watch
+  it in a browser. See [docs/MOQ.md](docs/MOQ.md).
 * **Without the gate.** Add `--no-group-gate` to the receiver to feed every frame to the decoder,
   even after a loss. That shows you the smearing the gate avoids.
 
