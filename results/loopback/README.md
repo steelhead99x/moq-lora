@@ -9,11 +9,13 @@ Measured 2026-11-20 on the current code (frame format version 4).
 ## What was run
 
 1. `moq-subghz-send --loopback` recorded 300 s of "air" four times: no FEC, FEC k=4, FEC k=8, and
-   FEC k=8 with encryption. Same settings as the radio runs otherwise: 320x240, 15 fps, GOP 15,
-   x264 at 180 kbit/s, FSK profile `300000:100000:6`, test pattern.
+   FEC k=8 with encryption. Same video settings as the radio runs: 320x240, 15 fps, GOP 15,
+   x264 at 180 kbit/s, test pattern. FSK profile `300000:100000:6`, the one the Pi-to-laptop
+   runs used.
 2. `scripts/loss_sweep.py` removed radio frames from each recording and played what was left
-   through `moq-subghz-recv --replay`. Every case was replayed 20 times with different frames
-   removed, and the table shows the mean.
+   through `moq-subghz-recv --replay`. Every case with loss was replayed 20 times with different
+   frames removed, and the table shows the mean. [`sweep.csv`](sweep.csv) has the spread
+   (`not_shown_sd`).
 3. Frames were removed two ways:
    * **Random:** each radio frame is lost on its own with the same chance.
    * **Radio trace:** the loss pattern of a real radio run, taken from its serial log and laid
@@ -61,16 +63,18 @@ radio frames and the others about 6, so a one-second GOP is about 100 radio fram
   picture.
 * **One parity frame per eight fixes most of that for random loss.** At 1% loss, 42% of frames
   not shown becomes 1.8%, for 17% more air time.
-* **Real loss is worse than random loss at the same rate.** The radio runs lost 1.5% of their
-  frames and about 10% of the events were two or more frames in a row
-  ([`traces.csv`](traces.csv)). One XOR parity frame can't repair two losses in its block, so
-  the real pattern costs about 9.6% of the picture where random loss at 1.5% costs 4.8%.
-  Going from k=8 to k=4 barely helps, because neighbours still land in the same block.
+* **Real loss is worse than random loss at the same rate.** The two 300 kbit/s radio runs lost
+  1.5% of their frames, and about 10% of their loss events were two or more frames in a row
+  (7 to 8% in the 350 kbit/s runs, see [`traces.csv`](traces.csv)). Under those patterns about
+  9.6% of the picture is lost, where random loss at 1.5% costs 4.8%. The likely reason is that
+  one XOR parity frame can't repair two losses in its block. That fits k=4 barely helping,
+  since neighbours still land in the same block, but it was not tested directly.
 * **Past about 2% loss this scheme is not enough.** A third of the picture is gone at 5%.
-* **Encryption does not change the picture.** The encrypted and plain columns agree within the
-  spread between replays.
+* **Encryption does not change the picture.** The encrypted and plain columns differ by less
+  than the spread between replays in every row (for example 1.78% and 2.31% at 1% loss, with a
+  spread of about 0.7).
 * **A freeze is about 0.6 s.** That is the mean with FEC k=8 from 0.5% to 2% loss, and on the
-  radio patterns. The worst single freeze at 1% loss with FEC k=8 was 1.1 s. The full numbers are in
+  radio patterns. The worst single freeze at 1% loss was 1.1 s plain and 1.7 s encrypted. The full numbers are in
   [`sweep.csv`](sweep.csv).
 
 ## Too much video for the link
@@ -93,20 +97,23 @@ recordings.)
 
 ## How far to trust it
 
-* The replay reproduces the radio. Laying the loss pattern of each run over a new recording
+* The replay lands near the radio. Laying the loss pattern of each run over a new recording
   gives 9.7%, 9.6%, 14.7% and 18.6% of frames not shown (the plain or encrypted k=8 column,
   whichever matches the run). The radio runs themselves measured 10.3%, 8.5%, 14.9% and 14.9%.
-  The last is the furthest off.
-* The no-FEC column matches arithmetic. If each radio frame is lost on its own, a video frame is
-  shown only when every radio frame before it in its GOP arrived. Working that out from the
-  sender's log gives 5.7%, 10.9%, 24.8%, 42.5%, 64.9%, 89.3% and 97.5% for the rows it was worked out for
-  (all but 1.5%).
-* Every delivered video frame was compared, byte for byte, with what the sender produced, in 60
-  replays at 2%, 5% and 10% loss. All 162,504 matched.
+  Three are within 1.2 points. The last is 3.7 points off. The radio runs used frame format
+  version 3 and these replays version 4; the FEC and the GOP rule are the same in both.
+* Two checks that don't use the receiver's own counters, both from
+  `scripts/loss_sweep.py check`:
+  * Every video frame delivered under loss was compared, byte for byte, with what the sender
+    produced, in 120 replays at 2%, 5% and 10% loss. All 276,548 matched.
+  * The no-FEC column matches arithmetic. If each radio frame is lost on its own, a video frame
+    is shown only when every radio frame before it in its GOP arrived. Worked out from the
+    sender's log, that gives 5.66%, 10.94%, 24.79%, 42.52%, 55.38%, 64.86%, 89.25% and 97.51%.
 * Only the four runs towards the Pi (`r*`) are used as loss patterns. The serial logs of the four
   runs towards the laptop don't mark which lines failed their frame check, so the pattern can't
   be rebuilt from them. The script checks each log against the receiver's own count and refuses
-  one that disagrees by more than 5%.
+  one that disagrees by more than 5%. For three of the four runs used, the lost frames it finds
+  are exactly the receiver's count; for `r300_off` it finds 581 against 567.
 * The radio runs were on a bench, antennas about a metre apart. Nothing here says what loss looks
   like at range.
 * Latency is not measured here. A file has no air time.
@@ -122,7 +129,7 @@ S=$PWD/target/release/moq-subghz-send
 mkdir -p /tmp/rec
 (umask 077; head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > /tmp/rec/key.hex)
 (cd /tmp/rec
- $S --loopback k0.air    --secs 300 --fec-k 0 > k0.send_summary.json &
+ $S --loopback k0.air    --secs 300 --fec-k 0 --log k0.send.jsonl > k0.send_summary.json &
  $S --loopback k4.air    --secs 300 --fec-k 4 > k4.send_summary.json &
  $S --loopback k8.air    --secs 300 --fec-k 8 > k8.send_summary.json &
  $S --loopback k8enc.air --secs 300 --fec-k 8 --key-file key.hex > k8enc.send_summary.json &
@@ -133,7 +140,8 @@ mkdir -p /tmp/rec
  $S --loopback b.air --secs 120 --fec-k 8 --bitrate 300000 --max-age-ms 600000 > overload_noage.send_summary.json &
  wait)
 python3 scripts/loss_sweep.py sweep --recv target/release/moq-subghz-recv --rec /tmp/rec \
-  --runs results/video/*/ --out results/loopback
+  --runs results/video/*/ --out /tmp/sweep
+python3 scripts/loss_sweep.py check --recv target/release/moq-subghz-recv --rec /tmp/rec
 ```
 
 A new recording differs a little from the one measured here, so expect the tables to move a
