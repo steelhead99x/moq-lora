@@ -1,5 +1,10 @@
 # Code review
 
+This review was written on 2026-11-17 against commit `826f1b9`, and sections were updated as
+fixes merged. File and line references (`lib.rs:494`) point at the tree as it was reviewed and
+have drifted since; the function and type names are the reliable pointers. Sections marked
+Fixed describe the code on `main`.
+
 Review of the `video-demo` tree for a public release: `moq-lora-wire`, `moq-lora-send`,
 `moq-lora-recv`, `moq-lora-report`, `vendor/sx1276`, `firmware/catwan-fw`, and `scripts/`.
 
@@ -260,19 +265,20 @@ Tests for the wire fixes are in `moq-lora-wire` (`hostile_frames_do_not_panic`,
 ## Private data and history
 
 No key, token, password, or private-key block was found in the tree or in any of the
-16 commits. No LAN address was found.
+16 commits. No LAN address was found. The scan was repeated on 2026-11-20 over every commit
+on every branch (115 on `main`) with the same result.
 
 Scrubbed from the working tree:
 
-* `results/video/README.md` from `4d7f226` had `~/sx1276-link/moq-lora-key.hex`,
-  `~/moq-lora-key.hex` (Pi account name `admin`), ssh alias `pi-host-a`, and
-  `/dev/cu.usbmodem21301`. The file now uses `$PI`, `$PORT`, `$LKEY`, `$PKEY`.
+* `results/video/README.md` from `4d7f226` had a key file path on the receiver host,
+  the receiver's account name, its ssh alias, and a local serial device path. The file now
+  uses `$PI`, `$PORT`, `$LKEY`, `$PKEY`.
 * `scripts/env.sh` from `e358988` defaulted `PORT` to `/dev/cu.usbmodem21301` and
-  `PI` to `pi-host-a`. Defaults are now `/dev/ttyACM0` and `pi`.
+  `PI` to the bench's ssh alias. Defaults are now `/dev/ttyACM0` and `pi`.
 
 Left in measured files on purpose (`results/video/clock_log.jsonl`, 471 lines, and
-each run's `clock_end.json`): `"host":"pi-host-a"`. Editing those would change the logs
-the table was computed from. The alias is not a hostname with a public DNS name,
+each run's `clock_end.json`): the bench's ssh alias as `"host"`. Editing those would
+change the logs the table was computed from. The alias is not a hostname with a public DNS name,
 but it is this bench's ssh alias.
 
 `firmware/catwan-fw/src/main.rs:157` hard-codes USB serial `613863E6354E26A3`. The
