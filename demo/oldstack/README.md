@@ -29,11 +29,7 @@ the object model on a raw radio link. Objects can be sealed with ChaCha20-Poly13
 [rind](https://github.com/kixel-ai/rind), and this demo turns that on. Everything between ffmpeg and the antenna is
 Rust.
 
-It is **not LoRaWAN**. There is no gateway, network server or join procedure. It is
-closer in spirit to what Wi-Fi HaLow (IEEE 802.11ah) does, a faster link in the same
-sub-GHz band, but it is a do-it-yourself link on a cheap chip, not HaLow. A comparison
-with real HaLow hardware would be a separate, future bench; nothing here simulates
-HaLow.
+It is **not LoRaWAN**. There is no gateway, network server or join procedure.
 
 ## The old stack
 
