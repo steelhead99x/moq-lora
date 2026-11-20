@@ -2,7 +2,7 @@
 
 From a bare Raspberry Pi 2 and a USB radio stick to a live picture in `ffplay`. Budget an hour.
 
-Just want to see it work? The [quick start in the README](README.md#quick-start-no-radio-needed)
+Just want to see it work? The [quick start in the README](README.md#try-it-no-radio-needed)
 runs the whole pipeline through a file, with no radios.
 
 > **Before you transmit:** read [section 9](#9-radio-rules). Short version: 915 MHz, 3 mW,
@@ -63,7 +63,7 @@ You don't need a camera. The sender uses ffmpeg's `testsrc2` pattern by default.
 On the laptop, with Rust 1.90 or newer and ffmpeg installed:
 
 ```sh
-git clone https://github.com/steelhead99x/moq-lora && cd moq-lora
+git clone https://github.com/steelhead99x/moq-subghz && cd moq-subghz
 cargo build --release
 
 # The Pi binaries: static, no cross compiler needed

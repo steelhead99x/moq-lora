@@ -9,7 +9,7 @@ exclude = ["vendor/sx1276", "firmware/catwan-fw", "moq-lora-publish"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
 rust-version = "1.90"
-repository = "https://github.com/steelhead99x/moq-lora"
+repository = "https://github.com/steelhead99x/moq-subghz"
 
 [profile.release]
 opt-level = 3
