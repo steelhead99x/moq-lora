@@ -1,4 +1,4 @@
-# moq-lora questline
+# moq-subghz questline
 
 ## Goal
 

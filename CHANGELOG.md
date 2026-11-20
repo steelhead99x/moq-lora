@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Renamed
+
+* The project is now called moq-subghz (it was moq-lora), and the repository moved to
+  `steelhead99x/moq-subghz`. The old address redirects. Crate, binary, and key file names are
+  unchanged for now.
+
 Changes since the runs in `results/video/` were measured (2026-11-17). None of these has been
 run on the radios yet, only through the no-radio loopback and the unit tests.
 
