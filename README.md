@@ -63,6 +63,10 @@ antennas about 1 m apart.
 All eight runs with every column (loss, CPU, overhead, both directions) are in
 [`results/video/table.md`](results/video/table.md). The raw logs are next to it.
 
+These runs were measured on 2026-11-17. The tools have changed since then (see the
+[changelog](CHANGELOG.md)), and the newer code has only been run through the no-radio
+loopback, not on the radios. The table will be re-measured before a tagged release.
+
 ## What's on the air
 
 ```
@@ -128,6 +132,12 @@ Details in the [HOWTO](HOWTO.md#9-radio-rules).
 | `scripts/` | the bench harness that produced the results |
 | `results/video/` | raw logs from every run |
 
+## Write-ups
+
+* [Broadcast over MoQ, starting small](https://hikd.pro/posts/broadcast-over-moq/): the idea behind
+  this project, with diagrams, and where it is headed.
+* [A quiet note on rind](https://hikd.pro/posts/rind-quiet-note/): a short note on the encryption library.
+
 ## Limits
 
 * Test pattern only. A camera should work (`--src /dev/video0`) but hasn't been benchmarked.
@@ -137,6 +147,11 @@ Details in the [HOWTO](HOWTO.md#9-radio-rules).
   can be replayed and the radio headers aren't encrypted. Each run encrypts under its own subkey,
   derived from the key and a random 96-bit salt, so runs never share a keystream.
   See [ROADMAP.md](ROADMAP.md) and the code review in [REVIEW.md](REVIEW.md).
+
+## Contributing and security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to build, test and send a change, and
+[SECURITY.md](SECURITY.md) for what the encryption does and doesn't cover and how to report a problem.
 
 ## License
 
