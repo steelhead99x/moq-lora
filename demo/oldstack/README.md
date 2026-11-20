@@ -12,11 +12,21 @@ demo/oldstack/run.sh          # or: make -C demo/oldstack demo
 ```
 
 It takes about four minutes and writes `results/results.md` and `results/results.json`.
-`run.sh --quick` is a 30-second smoke run.
+`run.sh --quick` is a smoke run of about a minute.
 
 You need Rust 1.90+, Python 3.10+ and Mosquitto (`apt install mosquitto` or
 `brew install mosquitto`; or point `MOSQUITTO=` at the binary). Python packages go in a
 local `.venv` from `requirements.txt` (paho-mqtt, cryptography, pytest).
+
+## See it
+
+Pictures and a demo built from the measured results (the figures are regenerated from `results/results.json` by `viz/make_figures.py`, so they cannot drift from the numbers):
+
+* [`viz/index.html`](viz/index.html): open it in a browser. It replays the measured 20 second video run frame by frame through both paths, and has a loss slider for a simulation of other loss rates. No server and nothing to download.
+* `demo.sh`: a run of about a minute at 5% radio loss that prints a side-by-side table (needs the same tools as `run.sh`).
+* The six infographics in [`viz/img/`](viz/img/): [the two paths](viz/img/stack.svg), [frames shown](viz/img/frames-shown.svg), [delay](viz/img/delay.svg), [command round trip](viz/img/command.svg), [channel time (computed)](viz/img/airtime.svg) and [where each wins](viz/img/where-each-wins.svg).
+
+![frames shown at 1% loss](viz/img/frames-shown.svg)
 
 ## What moq-lora is (and is not)
 
@@ -175,3 +185,5 @@ What is different, and what that means:
 | `moq-path/` | the Rust side: `tx`, `rx`, `echo` and `ping` over the real `moq-lora-wire` code |
 | `tests/` | pytest: LoRaWAN crypto against a public test frame, GWMP, fragmentation, airtime, and both stacks end to end |
 | `results/` | the measured results shown above |
+| `viz/` | the infographics, the HTML demo and the script that builds them from `results/results.json` |
+| `demo.sh` | quick run plus a side-by-side table |

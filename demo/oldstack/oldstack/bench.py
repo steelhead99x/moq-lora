@@ -389,8 +389,8 @@ def main() -> None:
     os.makedirs(a.runs, exist_ok=True)
     os.makedirs(a.results, exist_ok=True)
     if a.quick:
-        loads = {"sensor": workload.sensor(n=60, hz=50), "video": workload.video(secs=2)}
-        losses, cmd_n, interval = [0.0], 3, 1.0
+        loads = {"sensor": workload.sensor(n=60, hz=50), "video": workload.video(secs=6)}
+        losses, cmd_n, interval = [0.0, a.loss], 3, 1.0
     else:
         loads = {"sensor": workload.sensor(), "video": workload.video()}
         losses, cmd_n, interval = [0.0, a.loss], 10, 2.0
