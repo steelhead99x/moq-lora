@@ -555,6 +555,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "moq-lora-oldstack-demo"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "moq-lora-wire",
+]
+
+[[package]]
 name = "moq-lora-pi"
 version = "0.1.0"
 dependencies = [
