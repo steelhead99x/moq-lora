@@ -14,7 +14,22 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
   `moq-subghz-pi`, `moq-subghz-report` and `moq-subghz-publish`. The default key file is
   `moq-subghz-key.hex`, and the publisher reads `MOQ_SUBGHZ_RELAY`.
 
+### Fixed
+
+* **`catwan-fw` 0.5.1: the radio answers `I` right after power-up.** The firmware left the SX1276
+  RESET line low (the chip held in reset) until the first `L` or `F` command, so an `I` sent
+  first read `sx_version=0x00` and looked like a dead radio. The radio is not dead. 0.5.1 pulses
+  RESET at boot and retries until `RegVersion` reads 0x12, retries once more inside `L` and `F`
+  if the version check fails, and adds `X` to re-initialise the radio on demand
+  (`X sx_version=0x12 tries=1`). Radio settings, framing and pacing are unchanged.
+  New image `firmware/catwan-fw-0.5.1.uf2` (sha256 in `firmware/SHA256SUMS`). The measured runs
+  used `catwan-fw-v5.uf2` (0.5.0), which stays in the repo.
+
 ### Added
+
+* `results/factory-firmware/`: still pictures over LoRa with factory software at both ends
+  (Dragino's sample app, Electronic Cats' stock receiver), measured. Vendor images and fetch
+  scripts are in `firmware/vendor/`.
 
 * **`moq-subghz-lora2015`: a 2015-style LoRa image test**, in `results/lora-2015/`. A Pi sender
   (`lora2015-send`) sends a test picture in real LoRa mode as chunked JPEG, SSDV packets or
