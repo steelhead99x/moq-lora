@@ -5,9 +5,9 @@ have sent live video. They would have sent still pictures, in small packets, and
 test does that on the same Pi, HAT and CatWAN stick as the moq-subghz video, so the two can be
 compared on the same bench.
 
-**Status: built and tested without radios. Nothing here has been measured on the air yet.** The
-airtime table below is calculated from the SX1276 datasheet formula, not measured. The run steps
-are for the person with the radios.
+**Status: measured on the air, 2026-11-20.** 72 runs on `catwan-fw` 0.5.1 are in
+[`results/stick-0.5.1/`](../stick-0.5.1/README.md), with the factory software next to them. The airtime table
+below is still the calculated one; the measured seconds match it within 1% when no frame is lost.
 
 ## What gets sent
 

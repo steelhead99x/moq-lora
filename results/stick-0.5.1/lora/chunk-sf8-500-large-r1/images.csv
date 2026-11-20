@@ -1,0 +1,2 @@
+image,complete,frames_expected,frames_unique,frames_good,repeats,seconds_to_image,effective_fps,loss_est_pct,loss_exact_pct,image_bytes,air_bytes_unique,image_bytes_per_frame,air_toa_s_calc,calc_fps_if_no_loss,effective_image_bps,rssi_mean_dbm,snr_mean_db,matches_reference
+0,1,35,35,105,70,6.062,0.1650,0.0,0.0,8618,8688,253,6.033,0.1657,11373,-24.7,7.08,1

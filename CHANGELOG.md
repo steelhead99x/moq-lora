@@ -27,6 +27,11 @@ run on the radios yet, only through the no-radio loopback and the unit tests.
 
 ### Added
 
+* `results/stick-0.5.1/`: the full over-the-air benchmark on `catwan-fw` 0.5.1. 72 still-picture runs
+  (chunked JPEG, SSDV, LoRaWAN-framed at SF7/125, SF7/250, SF7/500, SF8/500) and 8 live FSK video runs,
+  next to the factory baseline, plus a 6 minute demo (`scripts/demo-051.sh`). `scripts/run2.sh` now works
+  without extra sender arguments and without ffplay (`PLAY=`).
+
 * `results/factory-firmware/`: still pictures over LoRa with factory software at both ends
   (Dragino's sample app, Electronic Cats' stock receiver), measured. Vendor images and fetch
   scripts are in `firmware/vendor/`.
